@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Обʼєкт — Urban Estate Group</title>
+<link rel="icon" type="image/png" href="/assets/logo/favicon.png">
+<style>
+  :root {
+    --bg: #0a0a0d; --bg2: #111116; --card-bg: #16161c; --border: #232329; --border-s: #2e2e36;
+    --text: #e8e8f0; --text-s: #b0b0c0; --text-m: #78788a; --accent-b: #4a9fd4;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+  a { color: inherit; }
+
+  header { display: flex; align-items: center; gap: 10px; padding: 16px 20px; border-bottom: 1px solid var(--border); background: var(--bg2); }
+  header svg { flex-shrink: 0; }
+
+  .wrap { max-width: 920px; margin: 0 auto; padding: 20px 20px 60px; }
+
+  #state-loading, #state-error { text-align: center; padding: 80px 20px; color: var(--text-m); font-size: 14px; }
+
+  .gallery-main { position: relative; width: 100%; aspect-ratio: 4/3; background: var(--card-bg); border-radius: 8px; overflow: hidden; cursor: zoom-in; }
+  .gallery-main img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .gallery-thumbs { display: flex; gap: 8px; margin-top: 8px; overflow-x: auto; padding-bottom: 4px; }
+  .gallery-thumbs img { width: 76px; height: 76px; object-fit: cover; border-radius: 5px; cursor: pointer; flex-shrink: 0; border: 2px solid transparent; opacity: 0.6; transition: all .15s; }
+  .gallery-thumbs img.active { border-color: var(--accent-b); opacity: 1; }
+
+  .status-badge { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; padding: 4px 10px; border-radius: 4px; border: 1px solid; margin-bottom: 10px; }
+
+  .title-row { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 14px; margin-top: 20px; }
+  .title-row h1 { font-size: 21px; margin: 0 0 6px; line-height: 1.3; }
+  .address { color: var(--text-s); font-size: 13px; }
+  .price { font-size: 26px; font-weight: 800; color: #50c878; white-space: nowrap; }
+
+  .specs-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 14px; margin: 24px 0; padding: 18px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; }
+  .spec-item .label { font-size: 9px; color: var(--text-m); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 4px; }
+  .spec-item .value { font-size: 15px; font-weight: 700; }
+
+  .description { font-size: 14px; line-height: 1.7; color: var(--text-s); white-space: pre-wrap; margin-bottom: 26px; }
+
+  .contact-card { display: flex; align-items: center; gap: 14px; padding: 18px 20px; background: linear-gradient(135deg, rgba(240,192,64,0.08), rgba(240,192,64,0.02)); border: 1px solid rgba(240,192,64,0.25); border-radius: 8px; }
+  .contact-avatar { width: 48px; height: 48px; border-radius: 50%; background: linear-gradient(135deg,#e0a820,#b87810); display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 18px; color: #14140f; flex-shrink: 0; }
+  .contact-info .label { font-size: 10px; color: var(--text-m); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 3px; }
+  .contact-info .name { font-size: 15px; font-weight: 700; margin-bottom: 2px; }
+  .contact-info a.phone { font-size: 14px; color: #f0c84a; text-decoration: none; font-weight: 600; }
+  .call-btn { margin-left: auto; background: linear-gradient(135deg,#e0a820,#b87810); color: #14140f; border: none; padding: 10px 18px; border-radius: 6px; font-weight: 700; font-size: 13px; text-decoration: none; white-space: nowrap; }
+
+  .lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.94); display: none; align-items: center; justify-content: center; z-index: 100; cursor: zoom-out; }
+  .lightbox.open { display: flex; }
+  .lightbox img { max-width: 92vw; max-height: 90vh; object-fit: contain; }
+
+  @media (max-width: 600px) {
+    .title-row { flex-direction: column; }
+    .price { font-size: 22px; }
+    .contact-card { flex-wrap: wrap; }
+    .call-btn { margin-left: 0; width: 100%; text-align: center; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <img src="/assets/logo/logo-horizontal-white.svg" alt="Urban Estate Group" style="height:38px; width:auto; display:block;">
+</header>
+
+<div class="wrap">
+  <div id="state-loading">⏳ Завантаження...</div>
+  <div id="state-error" style="display:none;">📭 Обʼєкт не знайдено або більше не доступний</div>
+  <div id="state-content" style="display:none;"></div>
+</div>
+
+<div class="lightbox" id="lightbox" onclick="this.classList.remove('open')">
+  <img id="lightbox-img" src="">
+</div>
+
+<script>
+const STATUS_META = {
+  available: { label: 'Вільно', color: '#308850' },
+  reserved:  { label: 'Резерв', color: '#b08030' },
+  sold:      { label: 'Продано', color: '#a84040' },
+};
+
+function escHtml(s) {
+  return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function initials(name) {
+  return (name || '').trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
+}
+
+function setMainPhoto(src) {
+  document.getElementById('gallery-main-img').src = src;
+  document.querySelectorAll('.gallery-thumbs img').forEach(img => img.classList.toggle('active', img.src === src));
+}
+
+function openLightbox(src) {
+  document.getElementById('lightbox-img').src = src;
+  document.getElementById('lightbox').classList.add('open');
+}
+
+async function load() {
+  const id = location.pathname.split('/').filter(Boolean).pop();
+  let o;
+  try {
+    const res = await fetch('/api/public/catalog/' + encodeURIComponent(id));
+    if (!res.ok) throw new Error('not found');
+    o = await res.json();
+  } catch {
+    document.getElementById('state-loading').style.display = 'none';
+    document.getElementById('state-error').style.display = 'block';
+    return;
+  }
+
+  document.title = (o.title || o.address || 'Обʼєкт') + ' — Urban Estate Group';
+
+  const st = STATUS_META[o.status] || STATUS_META.available;
+  const photos = o.photos && o.photos.length ? o.photos : [];
+  const specs = [
+    o.propType ? { label: 'Тип', value: o.propType } : null,
+    o.rooms ? { label: 'Кімнат', value: o.rooms } : null,
+    o.area ? { label: 'Площа', value: o.area + ' м²' } : null,
+    o.floor ? { label: 'Поверх', value: o.floor + (o.totalFloors ? '/' + o.totalFloors : '') } : null,
+    o.district ? { label: 'Район', value: o.district } : null,
+  ].filter(Boolean);
+
+  const priceLabel = o.price ? '$' + Number(o.price).toLocaleString('en-US') : '';
+
+  document.getElementById('state-content').innerHTML = `
+    ${photos.length ? `
+      <div class="gallery-main" id="gallery-main" onclick="openLightbox(document.getElementById('gallery-main-img').src)">
+        <img id="gallery-main-img" src="${escHtml(photos[0])}">
+      </div>
+      ${photos.length > 1 ? `<div class="gallery-thumbs">
+        ${photos.map((p, i) => `<img src="${escHtml(p)}" class="${i===0?'active':''}" onclick="event.stopPropagation();setMainPhoto('${escHtml(p)}')">`).join('')}
+      </div>` : ''}
+    ` : `<div class="gallery-main" style="display:flex;align-items:center;justify-content:center;font-size:40px;cursor:default;">🏠</div>`}
+
+    <div class="title-row">
+      <div>
+        <div class="status-badge" style="background:${st.color}22;color:${st.color};border-color:${st.color}55;">${st.label}</div>
+        <h1>${escHtml(o.title || o.address || 'Обʼєкт')}</h1>
+        ${o.address || o.district ? `<div class="address">${escHtml([o.district, o.address].filter(Boolean).join(', '))}</div>` : ''}
+      </div>
+      ${priceLabel ? `<div class="price">${priceLabel}</div>` : ''}
+    </div>
+
+    ${specs.length ? `<div class="specs-grid">
+      ${specs.map(s => `<div class="spec-item"><div class="label">${escHtml(s.label)}</div><div class="value">${escHtml(s.value)}</div></div>`).join('')}
+    </div>` : ''}
+
+    ${o.description ? `<div class="description">${escHtml(o.description)}</div>` : ''}
+
+    ${o.managerName ? `
+      <div class="contact-card">
+        <div class="contact-avatar">${escHtml(initials(o.managerName))}</div>
+        <div class="contact-info">
+          <div class="label">Відповідальний менеджер</div>
+          <div class="name">${escHtml(o.managerName)}</div>
+          ${o.managerPhone ? `<a class="phone" href="tel:${escHtml(o.managerPhone.replace(/\s/g,''))}">${escHtml(o.managerPhone)}</a>` : ''}
+        </div>
+        ${o.managerPhone ? `<a class="call-btn" href="tel:${escHtml(o.managerPhone.replace(/\s/g,''))}">📞 Зателефонувати</a>` : ''}
+      </div>
+    ` : ''}
+  `;
+
+  document.getElementById('state-loading').style.display = 'none';
+  document.getElementById('state-content').style.display = 'block';
+}
+
+load();
+</script>
+</body>
+</html>
