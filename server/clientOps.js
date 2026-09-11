@@ -1,4 +1,34 @@
 const { normalizePhone } = require('./phone');
+const { sendTelegramMessage } = require('./telegram');
+
+// Pings both sides by Telegram when a brand-new client is rejected for
+// belonging to another manager — the in-app toast is easy to miss if the
+// manager isn't staring at the CRM tab right then. Best-effort: a manager
+// without Telegram configured (or a delivery failure) never blocks the save.
+async function notifyBlockedDuplicate(pgClient, user, c, owner) {
+  try {
+    const { rows } = await pgClient.query(
+      'SELECT id, tg_settings FROM users WHERE id = ANY($1::int[])',
+      [[user.id, owner.manager_id]]
+    );
+    const settingsById = new Map(rows.map(r => [r.id, r.tg_settings || {}]));
+    const phone = c.phone || c.phone2 || '';
+
+    const mine = settingsById.get(user.id);
+    if (mine?.enabled && mine.token && mine.chatId) {
+      await sendTelegramMessage(mine.token, mine.chatId,
+        `🚫 Не додано: <b>${c.name}</b> (${phone})\nЦей клієнт вже в роботі у ${owner.display_name}.`);
+    }
+
+    const theirs = settingsById.get(owner.manager_id);
+    if (theirs?.enabled && theirs.token && theirs.chatId) {
+      await sendTelegramMessage(theirs.token, theirs.chatId,
+        `👀 ${user.displayName} намагався(лась) додати вашого клієнта <b>${owner.data.name}</b> (${phone}) — не додано, картка лишилась вашою.`);
+    }
+  } catch (err) {
+    console.error('notifyBlockedDuplicate failed:', err);
+  }
+}
 
 // Upserts a single client row for `user`, enforcing that a phone number can only
 // belong to ONE manager at a time. Runs inside the caller's transaction (pgClient
@@ -37,7 +67,9 @@ async function upsertClientAndNotify(pgClient, user, c) {
   }
 
   if (!isExistingOwnRow && matches.length > 0) {
-    return { blocked: true, clientName: c.name, otherManagerName: matches[0].display_name };
+    const owner = matches[0];
+    await notifyBlockedDuplicate(pgClient, user, c, owner);
+    return { blocked: true, clientName: c.name, otherManagerName: owner.display_name };
   }
 
   await pgClient.query(

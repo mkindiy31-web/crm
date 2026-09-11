@@ -103,6 +103,15 @@ router.post('/:id/transfer', async (req, res) => {
   if (!targetId) return res.status(400).json({ error: 'Вкажіть менеджера' });
   if (targetId === req.user.id) return res.status(400).json({ error: 'Клієнт уже у вас' });
 
+  // Purely informational — a note about an agreed referral %, shown in the
+  // client's history/card. Never factored into calcCommission or any other
+  // calculation, just recorded as text so managers remember the arrangement.
+  let splitPercent = null;
+  if (req.body?.splitPercent !== undefined && req.body?.splitPercent !== null && req.body?.splitPercent !== '') {
+    const n = parseFloat(req.body.splitPercent);
+    if (!Number.isNaN(n) && n > 0 && n <= 100) splitPercent = n;
+  }
+
   const { rows: targetRows } = await pool.query(
     'SELECT id, display_name FROM users WHERE id = $1 AND active = true',
     [targetId]
@@ -151,6 +160,9 @@ router.post('/:id/transfer', async (req, res) => {
       }
     }
 
+    const transferNote = `🔀 Клієнта передано: ${req.user.displayName} → ${targetRows[0].display_name}` +
+      (splitPercent ? ` (умова: ${splitPercent}% лишається за ${req.user.displayName})` : '');
+
     const updatedData = {
       ...row.data,
       stage: 0,
@@ -158,7 +170,8 @@ router.post('/:id/transfer', async (req, res) => {
       transferredAt: new Date().toISOString(),
       isNewTransfer: true,
       responsibleManagerName: targetRows[0].display_name,
-      history: [historyEntry(`🔀 Клієнта передано: ${req.user.displayName} → ${targetRows[0].display_name}`), ...(row.data.history || [])],
+      transferSplitNote: splitPercent ? `${splitPercent}% лишається за ${req.user.displayName}` : null,
+      history: [historyEntry(transferNote), ...(row.data.history || [])],
     };
 
     await client.query(

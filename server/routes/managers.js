@@ -37,7 +37,7 @@ router.post('/', async (req, res) => {
 
 router.patch('/:id', async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const { active, phone } = req.body || {};
+  const { active, phone, newPassword } = req.body || {};
 
   // Deactivating is manager-only and never allowed on your own account (self-lockout).
   if (typeof active === 'boolean') {
@@ -50,8 +50,16 @@ router.patch('/:id', async (req, res) => {
     if (id !== req.user.id && req.user.role !== 'admin') return res.status(403).json({ error: 'Немає доступу' });
     await pool.query('UPDATE users SET phone = $1 WHERE id = $2', [phone.trim() || null, id]);
   }
-  if (typeof active !== 'boolean' && typeof phone !== 'string') {
-    return res.status(400).json({ error: 'Очікується поле active або phone' });
+  // Password reset — this whole route is already admin-only (mounted behind
+  // auth.requireAdmin), and passwords are one-way hashed, so a reset is the
+  // only recovery path when a manager forgets/loses theirs.
+  if (typeof newPassword === 'string') {
+    if (newPassword.length < 6) return res.status(400).json({ error: 'Пароль має бути не менше 6 символів' });
+    const hash = await bcrypt.hash(newPassword, 10);
+    await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, id]);
+  }
+  if (typeof active !== 'boolean' && typeof phone !== 'string' && typeof newPassword !== 'string') {
+    return res.status(400).json({ error: 'Очікується поле active, phone або newPassword' });
   }
   res.status(204).end();
 });

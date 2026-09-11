@@ -67,6 +67,21 @@ CREATE TABLE IF NOT EXISTS catalog_items (
 CREATE INDEX IF NOT EXISTS idx_catalog_price ON catalog_items(price_num);
 CREATE INDEX IF NOT EXISTS idx_catalog_archived ON catalog_items(archived_at);
 
+-- Personal to-do list per manager/admin — not tied to a client, for things
+-- like "renew license", "call landlord about parking" etc. Separate from the
+-- client `tasks` array in clients.data, which is always client-scoped.
+CREATE TABLE IF NOT EXISTS personal_tasks (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  text TEXT NOT NULL,
+  due_date TEXT,
+  due_time TEXT,
+  done BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_personal_tasks_user ON personal_tasks(user_id, done);
+
 -- Funnel activity log for the real-time stats dashboard. Derived by diffing
 -- old vs new client data on every save (see clientOps.js), so it captures
 -- events from every save path (manual edits, drag-drop, AI-intake) for free.

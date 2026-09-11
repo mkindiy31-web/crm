@@ -61,7 +61,7 @@ router.post('/test', async (req, res) => {
   const ok = await sendTelegramMessage(
     s.token,
     s.chatId,
-    '✅ <b>KVADRAT CRM</b> — тест сповіщення!\n\nЦе повідомлення підтверджує, що зв\'язок з ботом налаштований правильно.'
+    '✅ <b>Urban Estate Group</b> — тест сповіщення!\n\nЦе повідомлення підтверджує, що зв\'язок з ботом налаштований правильно.'
   );
   res.json({ ok });
 });

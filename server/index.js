@@ -6,7 +6,7 @@ const pgSession = require('connect-pg-simple')(session);
 
 const { pool, initSchema } = require('./db');
 const { seedAdmin } = require('./seed');
-const { checkAndNotifyAll } = require('./telegram');
+const { checkAndNotifyAll, checkAndSendDailyDigest } = require('./telegram');
 const auth = require('./auth');
 const clientsRouter = require('./routes/clients');
 const ownersRouter = require('./routes/owners');
@@ -18,6 +18,7 @@ const teamRouter = require('./routes/team');
 const catalogRouter = require('./routes/catalog');
 const catalogPublicRouter = require('./routes/catalogPublic');
 const statsRouter = require('./routes/stats');
+const todosRouter = require('./routes/todos');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -43,6 +44,7 @@ app.use('/api', auth.router);
 app.use('/api/clients', auth.requireAuth, clientsRouter);
 app.use('/api/owners', auth.requireAuth, ownersRouter);
 app.use('/api/notifications', auth.requireAuth, notificationsRouter);
+app.use('/api/todos', auth.requireAuth, todosRouter);
 app.use('/api/admin/managers', auth.requireAuth, auth.requireAdmin, managersRouter);
 app.use('/api/telegram', auth.requireAuth, telegramRouter);
 // Intentionally NOT behind auth.requireAuth — Telegram calls this directly with no
@@ -72,6 +74,7 @@ async function start() {
 
   setInterval(() => {
     checkAndNotifyAll(pool).catch(err => console.error('Telegram reminder check failed:', err));
+    checkAndSendDailyDigest(pool).catch(err => console.error('Telegram daily digest failed:', err));
   }, 60 * 1000);
   setTimeout(() => {
     checkAndNotifyAll(pool).catch(err => console.error('Telegram reminder check failed:', err));

@@ -1,7 +1,9 @@
 const { normalizePhone } = require('./phone');
+const { STAGES, findStageIdByName } = require('./stages');
 
-const TASK_TYPES = ['call', 'consultation', 'inspection', 'registration'];
+const TASK_TYPES = ['call', 'consultation', 'selection', 'inspection', 'registration'];
 const MAX_STR = 2000;
+const STAGE_NAMES_LIST = STAGES.map(s => `"${s.name}"`).join(', ');
 
 // A name that is really just a phone number (digits/+/spaces/dashes) is a sign the
 // model split one buyer's phone-as-message into a fake second identity — treat it
@@ -21,6 +23,16 @@ function kyivToday() {
 function clip(v) {
   if (typeof v !== 'string') return '';
   return v.trim().slice(0, MAX_STR);
+}
+
+// Safety net against the model hallucinating a placeholder instead of an
+// empty string when the message only refers to the client by pronoun
+// ("цей клієнт", "його") — treats those the same as no name at all.
+const NAME_PLACEHOLDER_RE = /^(невідом|невказан|не\s*вказан|клієнт|цей|цього|його|її|н\/?д|n\/?a|unknown)\b/i;
+function sanitizeClientName(name) {
+  const clean = clip(name);
+  if (!clean || NAME_PLACEHOLDER_RE.test(clean)) return '';
+  return clean;
 }
 
 function sanitizeAppointment(raw) {
@@ -87,10 +99,10 @@ async function extractBuyers(images) {
   {
     "name": "Ім'я та прізвище або ім'я профілю",
     "phone": "номер телефону якщо є в переписці, інакше порожньо",
-    "source": "Instagram або Facebook або Рекомендація або Сайт або Дзвінок або Інше",
+    "source": "OLX або DOM.RIA або Інстаграм або Фейсбук або Тікток або Рекомендації або Банер або Інше",
     "notes": "короткий зміст переписки — що хоче клієнт, бюджет, район, деталі",
     "hasAppointment": true або false — чи домовились про конкретний дзвінок/зустріч/огляд,
-    "appointmentType": "call" (дзвінок) або "consultation" (консультація) або "inspection" (огляд) або "registration" (оформлення) — тільки якщо hasAppointment true,
+    "appointmentType": "call" (дзвінок) або "consultation" (консультація) або "selection" (підбір варіантів) або "inspection" (огляд) або "registration" (оформлення) — тільки якщо hasAppointment true,
     "appointmentDate": "YYYY-MM-DD — переведи відносні дати (завтра, в п'ятницю тощо) у конкретну дату відносно сьогодні, тільки якщо hasAppointment true",
     "appointmentTime": "HH:MM 24-годинний формат, тільки якщо hasAppointment true"
   }
@@ -147,13 +159,15 @@ async function extractTextUpdate(text) {
 
 Повідомлення: "${clip(text)}"
 
-Витягни коротке резюме нової інформації (без номера телефону — його вже витягнуто окремо) та визнач, чи йдеться про конкретну заплановану дію. Поверни ТІЛЬКИ JSON, без пояснень:
+Витягни коротке резюме нової інформації (без номера телефону — його вже витягнуто окремо), визнач, чи йдеться про конкретну заплановану дію, і чи просять перенести клієнта на інший етап воронки продажів. Етапи воронки (тільки ці назви, більше жодних): ${STAGE_NAMES_LIST}. Поверни ТІЛЬКИ JSON, без пояснень:
 {
   "notes": "коротке резюме нової інформації з повідомлення, українською",
   "hasAppointment": true або false — чи йдеться про конкретний запланований дзвінок/зустріч/огляд/оформлення,
-  "appointmentType": "call" (дзвінок) або "consultation" (консультація) або "inspection" (огляд/зустріч) або "registration" (оформлення) — тільки якщо hasAppointment true,
+  "appointmentType": "call" (дзвінок) або "consultation" (консультація) або "selection" (підбір варіантів) або "inspection" (огляд/зустріч) або "registration" (оформлення) — тільки якщо hasAppointment true,
   "appointmentDate": "YYYY-MM-DD — переведи відносні дати (сьогодні/завтра/післязавтра/дні тижня) у конкретну дату відносно сьогодні, тільки якщо hasAppointment true",
-  "appointmentTime": "HH:MM 24-годинний формат — переведи орієнтовний час (наприклад 'на обід'→13:00, 'зранку'→10:00, 'ввечері'→18:00) у конкретний час, тільки якщо hasAppointment true"
+  "appointmentTime": "HH:MM 24-годинний формат — переведи орієнтовний час (наприклад 'на обід'→13:00, 'зранку'→10:00, 'ввечері'→18:00) у конкретний час, тільки якщо hasAppointment true",
+  "hasStageChange": true або false — чи просять перенести/змінити етап клієнта у воронці,
+  "newStageName": "ТОЧНА назва етапу зі списку вище — тільки якщо hasStageChange true"
 }`;
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -178,19 +192,229 @@ async function extractTextUpdate(text) {
   const data = await response.json();
   const raw = data.content[0].text.trim();
   const jsonMatch = raw.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return { notes: clip(text), ...sanitizeAppointment({}) };
+  const emptyResult = { notes: clip(text), newStageId: null, newStageName: '', ...sanitizeAppointment({}) };
+  if (!jsonMatch) return emptyResult;
 
   let parsed;
   try {
     parsed = JSON.parse(jsonMatch[0]);
   } catch {
-    return { notes: clip(text), ...sanitizeAppointment({}) };
+    return emptyResult;
+  }
+
+  const wantsStageChange = parsed.hasStageChange === true || parsed.hasStageChange === 'true';
+  const newStageId = wantsStageChange ? findStageIdByName(parsed.newStageName) : null;
+
+  return {
+    notes: clip(parsed.notes) || clip(text),
+    newStageId,
+    newStageName: newStageId != null ? clip(parsed.newStageName) : '',
+    ...sanitizeAppointment(parsed || {}),
+  };
+}
+
+// A plain-text Telegram message that names a client instead of giving their
+// phone number, e.g. "додай завдання клієнту Марку подзвонити завтра о 15:00".
+// Pulls out the name so the caller can look the client up by it, plus the same
+// appointment shape as extractTextUpdate.
+async function extractClientTaskByName(text) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY не налаштований на сервері');
+
+  const { isoDate, weekday } = kyivToday();
+
+  const prompt = `Це повідомлення від менеджера з нерухомості боту — завдання по конкретному клієнту, якого названо ІМ'ЯМ (не номером телефону). Сьогодні ${isoDate} (${weekday}) за київським часом.
+
+Повідомлення: "${clip(text)}"
+
+Витягни ім'я клієнта — ТІЛЬКИ якщо в повідомленні дійсно назване власне ім'я людини (наприклад "Марку", "Вікторія", "Іван Петренко"). Якщо клієнта позначено лише займенником без імені (наприклад "цього клієнта", "його", "її") — clientName має бути порожнім рядком, НЕ вигадуй і не підставляй слова-заглушки типу "невказано".
+
+Також визнач, чи йдеться про перенесення клієнта на інший етап воронки продажів. Етапи воронки (тільки ці назви, більше жодних): ${STAGE_NAMES_LIST}.
+
+Поверни ТІЛЬКИ JSON, без пояснень:
+{
+  "clientName": "ім'я клієнта, як згадано в повідомленні, або порожній рядок",
+  "notes": "коротке резюме завдання, українською",
+  "hasAppointment": true або false — чи йдеться про конкретний запланований дзвінок/зустріч/огляд/оформлення,
+  "appointmentType": "call" (дзвінок) або "consultation" (консультація) або "selection" (підбір варіантів) або "inspection" (огляд/зустріч) або "registration" (оформлення) — тільки якщо hasAppointment true,
+  "appointmentDate": "YYYY-MM-DD — переведи відносні дати (сьогодні/завтра/післязавтра/дні тижня) у конкретну дату відносно сьогодні, тільки якщо hasAppointment true",
+  "appointmentTime": "HH:MM 24-годинний формат — переведи орієнтовний час (наприклад 'на обід'→13:00) у конкретний, тільки якщо hasAppointment true",
+  "hasStageChange": true або false — чи просять перенести/змінити етап клієнта у воронці,
+  "newStageName": "ТОЧНА назва етапу зі списку вище — тільки якщо hasStageChange true"
+}`;
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: process.env.AI_INTAKE_MODEL || 'claude-haiku-4-5',
+      max_tokens: 512,
+      messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || response.statusText);
+  }
+
+  const data = await response.json();
+  const raw = data.content[0].text.trim();
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  const emptyResult = { clientName: '', notes: clip(text), newStageId: null, newStageName: '', ...sanitizeAppointment({}) };
+  if (!jsonMatch) return emptyResult;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonMatch[0]);
+  } catch {
+    return emptyResult;
+  }
+
+  const wantsStageChange = parsed.hasStageChange === true || parsed.hasStageChange === 'true';
+  const newStageId = wantsStageChange ? findStageIdByName(parsed.newStageName) : null;
+
+  return {
+    clientName: sanitizeClientName(parsed.clientName),
+    notes: clip(parsed.notes) || clip(text),
+    newStageId,
+    newStageName: newStageId != null ? clip(parsed.newStageName) : '',
+    ...sanitizeAppointment(parsed || {}),
+  };
+}
+
+// A plain-text Telegram message that gives a phone number NOT already in the
+// manager's client base, explicitly asking to add it as a new client (e.g.
+// "додай клієнта 0671234567 Марк, шукає 1-кімнатну"). The phone itself is
+// extracted separately by the caller (regex) — this only pulls the name,
+// request summary, and optional first appointment.
+async function extractNewClientFromText(text) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY не налаштований на сервері');
+
+  const { isoDate, weekday } = kyivToday();
+
+  const prompt = `Це повідомлення від менеджера з нерухомості боту — прохання додати НОВОГО клієнта (номер телефону вже витягнуто окремо, ігноруй його). Сьогодні ${isoDate} (${weekday}) за київським часом.
+
+Повідомлення: "${clip(text)}"
+
+Витягни ім'я нового клієнта (якщо назване), коротке резюме запиту клієнта, і чи йдеться про конкретну заплановану дію з датою й часом. Поверни ТІЛЬКИ JSON, без пояснень:
+{
+  "name": "ім'я клієнта, як згадано в повідомленні, або порожній рядок якщо не назване",
+  "notes": "коротке резюме запиту клієнта (що шукає, бюджет тощо), українською",
+  "hasAppointment": true або false,
+  "appointmentType": "call" (дзвінок) або "consultation" (консультація) або "selection" (підбір варіантів) або "inspection" (огляд/зустріч) або "registration" (оформлення) — тільки якщо hasAppointment true,
+  "appointmentDate": "YYYY-MM-DD — переведи відносні дати у конкретну дату відносно сьогодні, тільки якщо hasAppointment true",
+  "appointmentTime": "HH:MM 24-годинний формат, тільки якщо hasAppointment true"
+}`;
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: process.env.AI_INTAKE_MODEL || 'claude-haiku-4-5',
+      max_tokens: 512,
+      messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || response.statusText);
+  }
+
+  const data = await response.json();
+  const raw = data.content[0].text.trim();
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  const emptyResult = { name: '', notes: clip(text), ...sanitizeAppointment({}) };
+  if (!jsonMatch) return emptyResult;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonMatch[0]);
+  } catch {
+    return emptyResult;
   }
 
   return {
+    name: sanitizeClientName(parsed.name),
     notes: clip(parsed.notes) || clip(text),
     ...sanitizeAppointment(parsed || {}),
   };
 }
 
-module.exports = { extractBuyers, extractTextUpdate, TASK_TYPES };
+// A plain-text Telegram message with NO client phone number in it — treated as
+// a personal to-do item instead (e.g. "продовжити ліцензію на CRM в п'ятницю",
+// "подзвонити орендодавцю про паркінг завтра вранці"). Same model/date-parsing
+// approach as extractTextUpdate, but returns a to-do shape, not a client update.
+async function extractPersonalTodo(text) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY не налаштований на сервері');
+
+  const { isoDate, weekday } = kyivToday();
+
+  const prompt = `Це повідомлення від менеджера з нерухомості боту-нагадувачу — особиста справа "для себе", НЕ повʼязана з конкретним клієнтом (номера телефону клієнта в ньому немає). Сьогодні ${isoDate} (${weekday}) за київським часом.
+
+Повідомлення: "${clip(text)}"
+
+Перетвори це на короткий пункт to-do списку та, якщо в повідомленні згадана дата чи день (сьогодні/завтра/післязавтра/день тижня/конкретне число), визнач її. Час (година) потрібен, лише якщо він явно згаданий — інакше залиш порожнім, це нормально для to-do без точного часу. Поверни ТІЛЬКИ JSON, без пояснень:
+{
+  "task": "короткий, чіткий опис справи українською, без зайвих слів",
+  "hasDate": true або false — чи згадана в повідомленні дата/день,
+  "date": "YYYY-MM-DD — переведи відносну дату у конкретну відносно сьогодні, тільки якщо hasDate true",
+  "hasTime": true або false — чи згадана конкретна година,
+  "time": "HH:MM 24-годинний формат, тільки якщо hasTime true"
+}`;
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: process.env.AI_INTAKE_MODEL || 'claude-haiku-4-5',
+      max_tokens: 512,
+      messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || response.statusText);
+  }
+
+  const data = await response.json();
+  const raw = data.content[0].text.trim();
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return { task: clip(text), dueDate: '', dueTime: '' };
+
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonMatch[0]);
+  } catch {
+    return { task: clip(text), dueDate: '', dueTime: '' };
+  }
+
+  const date = clip(parsed.date);
+  const time = clip(parsed.time);
+  const validDate = /^\d{4}-\d{2}-\d{2}$/.test(date);
+  const validTime = /^\d{2}:\d{2}$/.test(time);
+
+  return {
+    task: clip(parsed.task) || clip(text),
+    dueDate: (parsed.hasDate === true || parsed.hasDate === 'true') && validDate ? date : '',
+    dueTime: (parsed.hasTime === true || parsed.hasTime === 'true') && validTime ? time : '',
+  };
+}
+
+module.exports = { extractBuyers, extractTextUpdate, extractPersonalTodo, extractClientTaskByName, extractNewClientFromText, TASK_TYPES };

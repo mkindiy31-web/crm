@@ -214,11 +214,9 @@
   .stage-2 { border-bottom-color: #2a7a80; background: rgba(42,122,128,0.08) !important; }
   .stage-3 { border-bottom-color: #b08030; background: rgba(176,128,48,0.08) !important; }
   .stage-4 { border-bottom-color: #6a408a; background: rgba(106,64,138,0.08) !important; }
-  .stage-5 { border-bottom-color: #7a50a8; background: rgba(122,80,168,0.08) !important; }
-  .stage-6 { border-bottom-color: #d68910; background: rgba(214,137,16,0.08) !important; }
-  .stage-7 { border-bottom-color: #a84040; background: rgba(168,64,64,0.08) !important; }
-  .stage-8 { border-bottom-color: #308850; background: rgba(48,136,80,0.08) !important; }
-  .stage-9 { border-bottom-color: #c8a020; background: rgba(200,160,32,0.08) !important; }
+  .stage-5 { border-bottom-color: #a84040; background: rgba(168,64,64,0.08) !important; }
+  .stage-6 { border-bottom-color: #308850; background: rgba(48,136,80,0.08) !important; }
+  .stage-7 { border-bottom-color: #c8a020; background: rgba(200,160,32,0.08) !important; }
 
   /* COLUMN TINT BACKGROUNDS */
   #col-0 { background: rgba(74,159,212,0.06) !important;  border-color: rgba(74,159,212,0.22) !important; }
@@ -735,6 +733,7 @@
   <div class="sidebar-item" onclick="showView('today', this)"><span class="icon">🔔</span> Завдання сьогодні<span class="nav-badge nav-badge-alert" id="nb-today"></span></div>
   <div class="sidebar-item" onclick="showView('tomorrow', this)"><span class="icon">📅</span> Завдання завтра<span class="nav-badge" id="nb-tomorrow"></span></div>
   <div class="sidebar-item" onclick="showView('calendar', this)"><span class="icon">📆</span> Календар</div>
+  <div class="sidebar-item" onclick="showView('todos', this)"><span class="icon">✅</span> Мої завдання<span class="nav-badge" id="nb-todos"></span></div>
   <div class="sidebar-item" onclick="showView('vip', this)"><span class="icon">👑</span> Постійні інвестори<span class="nav-badge" id="nb-vip"></span></div>
   <div class="sidebar-item" onclick="showView('cold', this)"><span class="icon">❄️</span> Холодна база<span class="nav-badge" id="nb-cold"></span></div>
   <div class="sidebar-item" onclick="showView('notask', this)"><span class="icon">🔕</span> Без завдань<span class="nav-badge" id="nb-notask"></span></div>
@@ -899,7 +898,11 @@
       <span style="font-size:11px;color:var(--text-m);word-break:break-all;">https://api.telegram.org/bot<b>ВАШ_ТОКЕН</b>/getUpdates</span><br>
       3. Знайдіть <b style="color:var(--accent-b);">"id"</b> всередині <b>"chat"</b> — це ваш Chat ID<br><br>
       📸 Після увімкнення можна надсилати цьому боту 1–10 скріншотів переписки з покупцем — я автоматично додам їх у CRM.<br><br>
-      💬 Або напишіть текстом номер клієнта (у будь-якому форматі) і що нового — я оновлю картку і за потреби поставлю завдання.
+      💬 Або напишіть текстом номер клієнта (у будь-якому форматі) і що нового — я оновлю картку і за потреби поставлю завдання.<br><br>
+      👤 Клієнта можна назвати й на ім'я, без номера — наприклад "додай завдання клієнту Марку подзвонити завтра о 15:00". Якщо клієнтів з таким іменем декілька, я перепитаю номер.<br><br>
+      ↪️ Так само можна перенести клієнта на інший етап воронки — наприклад "перенеси клієнта Марка в підбір" (назва етапу має збігатись з тим, що в CRM).<br><br>
+      ✅ Щоб додати особисте завдання (не по клієнту) — почніть повідомлення з "додай завдання..." без згадки слова "клієнт" (наприклад: "додай завдання зателефонувати в п'ятницю").<br><br>
+      📅 Щовечора о 21:00 бот сам надішле нумерований список задач з to-do списку на завтра (якщо там щось є).
     </div>
 
     <div class="field">
@@ -1078,12 +1081,13 @@
           <label>Звідки дізнався</label>
           <select id="f-source">
             <option value="">— не вказано —</option>
-            <option value="Facebook/Instagram">📱 Facebook / Instagram</option>
-            <option value="Сайт">🌐 Сайт</option>
-            <option value="Рекомендація">🤝 Рекомендація</option>
-            <option value="Банер/зовнішня реклама">🪧 Банер / зовнішня реклама</option>
-            <option value="Холодний дзвінок">📞 Холодний дзвінок</option>
-            <option value="OLX/DOM.RIA">🏠 OLX / DOM.RIA</option>
+            <option value="OLX">🏠 OLX</option>
+            <option value="DOM.RIA">🏠 DOM.RIA</option>
+            <option value="Інстаграм">📷 Інстаграм</option>
+            <option value="Фейсбук">📘 Фейсбук</option>
+            <option value="Тікток">🎵 Тікток</option>
+            <option value="Рекомендації">🤝 Рекомендації</option>
+            <option value="Банер">🪧 Банер</option>
             <option value="Інше">💬 Інше</option>
           </select>
         </div>
@@ -1245,16 +1249,14 @@
 
       <div class="section-title">Етап воронки</div>
       <select class="drawer-input" id="dr-stage-select" onchange="changeStageImmediate()">
-        <option value="0">📥 Нові передані</option>
-        <option value="1">📞 Необхідний дзвінок</option>
-        <option value="2">🗓 Призначена консультація Онлайн</option>
-        <option value="3">💬 Призначена консультація Офіс</option>
-        <option value="4">📍 Призначений Огляд</option>
-        <option value="5">🔍 Огляд проведений</option>
-        <option value="6">📤 Пропозиція надіслана</option>
-        <option value="7">📅 Бронювання здійснено</option>
-        <option value="8">🎉 Придбано</option>
-        <option value="9">👑 Постійні інвестори</option>
+        <option value="0">📥 1. Новий лід</option>
+        <option value="1">📞 2. Зателефонувати</option>
+        <option value="2">🗓 3. Призначено консультацію</option>
+        <option value="3">🔎 4. Підбір</option>
+        <option value="4">📍 5. Огляд</option>
+        <option value="5">📅 6. Бронювання</option>
+        <option value="6">🎉 7. Угода</option>
+        <option value="7">👑 8. Постійні інвестори</option>
       </select>
 
       <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 0 4px;">
@@ -1306,6 +1308,7 @@
         <select id="dr-task-type">
           <option value="call">📞 Дзвінок</option>
           <option value="consultation">💬 Консультація</option>
+          <option value="selection">🔎 Підбір</option>
           <option value="inspection">🔍 Огляд</option>
           <option value="registration">📝 Оформлення</option>
         </select>
@@ -1390,6 +1393,7 @@
         <select id="tm-type">
           <option value="call">📞 Призначено дзвінок</option>
           <option value="consultation">💬 Запланована консультація</option>
+          <option value="selection">🔎 Запланований підбір</option>
           <option value="inspection">🔍 Запланований огляд</option>
           <option value="registration">📝 Заплановане оформлення</option>
         </select>
@@ -1489,17 +1493,19 @@
 // ═══════════════════════════════════════════
 
 const STAGES = [
-  { id: 0, name: 'Нові передані',             icon: '📥', color: '#4a9fd4', prob: 5, inbox: true },
-  { id: 1, name: 'Необхідний дзвінок',       icon: '📞', color: '#3a6ab0', prob: 10 },
-  { id: 2, name: 'Призначена консультація Онлайн', icon: '🗓', color: '#2a7a80', prob: 20 },
-  { id: 3, name: 'Призначена консультація Офіс',   icon: '💬', color: '#b08030', prob: 35 },
-  { id: 4, name: 'Призначений Огляд',              icon: '📍', color: '#6a408a', prob: 50 },
-  { id: 5, name: 'Огляд проведений',          icon: '🔍', color: '#7a50a8', prob: 65 },
-  { id: 6, name: 'Пропозиція надіслана',      icon: '📤', color: '#d68910', prob: 72 },
-  { id: 7, name: 'Бронювання здійснено',      icon: '📅', color: '#a84040', prob: 80 },
-  { id: 8, name: 'Придбано',                  icon: '🎉', color: '#308850', prob: 100 },
-  { id: 9, name: 'Постійні інвестори',        icon: '👑', color: '#c8a020', prob: null, vip: true },
+  { id: 0, name: '1. Новий лід',                 icon: '📥', color: '#4a9fd4', prob: 5, inbox: true },
+  { id: 1, name: '2. Зателефонувати',            icon: '📞', color: '#3a6ab0', prob: 15 },
+  { id: 2, name: '3. Призначено консультацію',   icon: '🗓', color: '#2a7a80', prob: 30 },
+  { id: 3, name: '4. Підбір',                    icon: '🔎', color: '#b08030', prob: 45 },
+  { id: 4, name: '5. Огляд',                     icon: '📍', color: '#6a408a', prob: 60 },
+  { id: 5, name: '6. Бронювання',                icon: '📅', color: '#a84040', prob: 80 },
+  { id: 6, name: '7. Угода',                     icon: '🎉', color: '#308850', prob: 100 },
+  { id: 7, name: '8. Постійні інвестори',        icon: '👑', color: '#c8a020', prob: null, vip: true },
 ];
+// Closed/won stage, found by its prob:100 marker rather than a hardcoded id —
+// stage ids shift whenever a stage is inserted/removed/reordered.
+const DEAL_STAGE_ID = STAGES.find(s => s.prob === 100)?.id ?? STAGES.length - 1;
+const VIP_STAGE_ID = STAGES.find(s => s.vip)?.id ?? STAGES.length - 1;
 
 // ── OWNER STAGES ─────────────────────────────────────────────────────
 const OWNER_STAGES = [
@@ -1602,11 +1608,11 @@ function getFiltered() {
   } else if (todayFilterActive) {
     list = list.filter(c => c.tasks && c.tasks.some(t => !t.done && t.date <= td));
   } else if (notaskFilterActive) {
-    list = list.filter(c => !c.cold && c.stage !== 8 && (!c.tasks || !c.tasks.some(t => !t.done)));
+    list = list.filter(c => !c.cold && c.stage !== DEAL_STAGE_ID && (!c.tasks || !c.tasks.some(t => !t.done)));
   } else {
     list = list.filter(c => !c.cold);
     if (hotFilterActive) list = list.filter(c => c.hot);
-    if (vipFilterActive) list = list.filter(c => c.stage === 9);
+    if (vipFilterActive) list = list.filter(c => c.stage === VIP_STAGE_ID);
   }
   if (!q) return list;
   return list.filter(c =>
@@ -1625,14 +1631,14 @@ function updateNavBadges() {
   const td = isoToday();
   const tm = isoTomorrow();
   const set = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = n > 0 ? n : ''; };
-  set('nb-board',    clients.filter(c => !c.cold).length);
+  set('nb-board',    clients.filter(c => !c.cold && c.stage !== VIP_STAGE_ID).length);
   set('nb-hot',      clients.filter(c => c.hot && !c.cold).length);
   set('nb-today',    clients.filter(c => c.tasks && c.tasks.some(t => !t.done && t.date <= td)).length);
   set('nb-tomorrow', clients.filter(c => c.tasks && c.tasks.some(t => !t.done && t.date === tm)).length);
-  set('nb-vip',      clients.filter(c => c.stage === 9).length);
+  set('nb-vip',      clients.filter(c => c.stage === VIP_STAGE_ID).length);
   set('nb-cold',     clients.filter(c => c.cold).length);
   set('nb-owners',   owners.length);
-  set('nb-notask',   clients.filter(c => !c.cold && c.stage !== 8 && (!c.tasks || !c.tasks.some(t => !t.done))).length);
+  set('nb-notask',   clients.filter(c => !c.cold && c.stage !== DEAL_STAGE_ID && (!c.tasks || !c.tasks.some(t => !t.done))).length);
 }
 
 function renderBoard() {
@@ -1644,7 +1650,10 @@ function renderBoard() {
 
   board.innerHTML = '';
 
-  STAGES.forEach(stage => {
+  // "Постійні інвестори" has its own dedicated sidebar view (a flat list, not
+  // a funnel step) — excluded here so the main pipeline board doesn't carry a
+  // column that's redundant with that view.
+  STAGES.filter(stage => !stage.vip).forEach(stage => {
     const cards = filtered.filter(c => c.stage === stage.id)
       .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     const total = cards.length;
@@ -1910,8 +1919,8 @@ function _onCDUp(e) {
 }
 
 function updateCommissionBar() {
-  const totalComm = clients.filter(c => c.stage < 8).reduce((sum, c) => sum + calcCommission(c), 0);
-  const earnedComm = clients.filter(c => c.stage === 8).reduce((sum, c) => sum + calcCommission(c), 0);
+  const totalComm = clients.filter(c => c.stage < DEAL_STAGE_ID).reduce((sum, c) => sum + calcCommission(c), 0);
+  const earnedComm = clients.filter(c => c.stage === DEAL_STAGE_ID).reduce((sum, c) => sum + calcCommission(c), 0);
   const bar = document.getElementById('commission-bar');
   const tot = document.getElementById('commission-total');
   if (bar && tot) {
@@ -2062,7 +2071,7 @@ function openModal(defaultStage, id) {
       .forEach(fid => setF(fid, ''));
     setF('f-prop-type', 'Квартира'); // default
     document.querySelectorAll('#f-rooms-picker .room-btn').forEach(b => b.classList.remove('active'));
-    populateStageSelect(defaultStage !== undefined ? defaultStage : 1); // stage 0 is the transfer inbox, manual adds start at "Необхідний дзвінок"
+    populateStageSelect(defaultStage !== undefined ? defaultStage : 1); // stage 0 is the transfer inbox, manual adds start at "Зателефонувати"
   }
 
   updateHotToggle();
@@ -2259,15 +2268,13 @@ function showView(view, el) {
   } else if (view === 'vip') {
     hotFilterActive = false; todayFilterActive = false; tomorrowFilterActive = false; vipFilterActive = true; coldFilterActive = false;
     title.textContent = '👑 Постійні інвестори';
-    const boardWrap = document.getElementById('board-wrap');
-    boardWrap.innerHTML = '<div class="board" id="board"></div>';
-    renderAll();
+    renderListView(clients.filter(c => c.stage === VIP_STAGE_ID));
+    updateNavBadges();
   } else if (view === 'cold') {
     hotFilterActive = false; todayFilterActive = false; tomorrowFilterActive = false; vipFilterActive = false; coldFilterActive = true; notaskFilterActive = false;
     title.textContent = '❄️ Холодна база';
-    const boardWrap = document.getElementById('board-wrap');
-    boardWrap.innerHTML = '<div class="board" id="board"></div>';
-    renderAll();
+    renderListView(clients.filter(c => c.cold));
+    updateNavBadges();
   } else if (view === 'tomorrow') {
     hotFilterActive = false; todayFilterActive = false; tomorrowFilterActive = true; vipFilterActive = false; coldFilterActive = false; notaskFilterActive = false;
     title.textContent = '📅 Завдання завтра';
@@ -2306,6 +2313,9 @@ function showView(view, el) {
   } else if (view === 'catalog') {
     title.textContent = '📸 Каталог обʼєктів';
     renderCatalogView();
+  } else if (view === 'todos') {
+    title.textContent = '✅ Мої завдання';
+    renderTodosView();
   }
 }
 
@@ -2343,7 +2353,7 @@ function renderListView(list) {
               const col = isOv ? '#c05050' : isTd ? '#50a870' : '#6090d0';
               taskHtml = `<span style="font-size:11px;color:${col};font-weight:600;">${tt.icon} ${tt.label}<br><span style="font-weight:400;font-size:10px;">${isOv?'⚠️ ':isTd?'🔔 ':''}${formatDateUA(next.date)}</span></span>`;
             }
-            const stageColor = ['#3a6ab0','#b08030','#7a50a8','#a84040','#308850'][c.stage];
+            const stageColor = STAGES[c.stage]?.color || '#3a6ab0';
             return `
             <tr style="border-top:1px solid var(--border); transition:background .15s; cursor:pointer;"
                 onmouseover="this.style.background='var(--card-hover)'" onmouseout="this.style.background=''"
@@ -2695,7 +2705,7 @@ async function convertOwnerToClient(oid) {
     name: o.name,
     phone: o.phone || '',
     source: '',
-    stage: 1, // "Необхідний дзвінок" — stage 0 is the transfer inbox, not for organic new clients
+    stage: 1, // "Зателефонувати" — stage 0 is the transfer inbox, not for organic new clients
     hot: false,
     district: o.address || '',
     budgetMax: (o.price || '').replace(/[^\d.]/g, '') || '',
@@ -2819,6 +2829,116 @@ async function renderNotificationsView() {
   updateNotificationBadge();
 }
 
+// ═══════════════════════════════════════════
+// PERSONAL TO-DO LIST — not tied to any client
+// ═══════════════════════════════════════════
+
+let _todosCache = [];
+
+async function renderTodosView() {
+  const boardWrap = document.getElementById('board-wrap');
+  const res = await fetch('/api/todos');
+  _todosCache = res.ok ? await res.json() : [];
+  const td = isoToday();
+
+  const open = _todosCache.filter(t => !t.done);
+  const done = _todosCache.filter(t => t.done);
+
+  const rowHtml = (t) => {
+    const overdue = !t.done && t.due_date && t.due_date < td;
+    const dueToday = !t.done && t.due_date === td;
+    const dateColor = overdue ? '#c05050' : dueToday ? '#50a870' : 'var(--text-s)';
+    const dateLabel = t.due_date
+      ? `<span style="font-size:11px;color:${dateColor};font-weight:600;">${overdue ? '⚠️ ' : dueToday ? '🔔 ' : '📅 '}${formatDateUA(t.due_date)}${t.due_time ? ' · ' + t.due_time : ''}</span>`
+      : `<span style="font-size:11px;color:var(--text-m);">без дати</span>`;
+    return `
+      <div style="display:flex;align-items:center;gap:12px;padding:12px 16px;background:var(--card-bg);border:1px solid var(--border);margin-bottom:8px;">
+        <input type="checkbox" ${t.done ? 'checked' : ''} onchange="toggleTodoDone('${t.id}', this.checked)" style="width:18px;height:18px;flex-shrink:0;cursor:pointer;">
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:13px;color:var(--text);${t.done ? 'text-decoration:line-through;color:var(--text-m);' : ''}line-height:1.4;">${escHtml(t.text)}</div>
+          <div style="margin-top:4px;">${dateLabel}</div>
+        </div>
+        <div onclick="deleteTodo('${t.id}')" style="cursor:pointer;color:var(--text-m);font-size:15px;padding:4px 6px;flex-shrink:0;" title="Видалити">✕</div>
+      </div>`;
+  };
+
+  boardWrap.innerHTML = `
+    <div style="padding:24px 28px;max-width:640px;">
+      <div style="display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap;">
+        <input id="todo-new-text" type="text" placeholder="Що потрібно зробити?" style="flex:1;min-width:200px;padding:10px 14px;background:var(--card-bg);border:1px solid var(--border-s);color:var(--text);font-size:13px;" onkeydown="if(event.key==='Enter')addTodo()">
+        <input id="todo-new-date" type="date" style="padding:10px 10px;background:var(--card-bg);border:1px solid var(--border-s);color:var(--text);font-size:12px;">
+        <input id="todo-new-time" type="time" style="padding:10px 10px;background:var(--card-bg);border:1px solid var(--border-s);color:var(--text);font-size:12px;">
+        <button onclick="addTodo()" style="padding:10px 18px;background:var(--accent-b);color:#0a0a0d;border:none;font-weight:700;font-size:12px;cursor:pointer;">+ Додати</button>
+      </div>
+
+      ${open.length === 0 ? `<div style="text-align:center;padding:40px;color:var(--text-m);font-size:14px;">📭 Немає активних завдань</div>` : open.map(rowHtml).join('')}
+
+      ${done.length ? `
+        <div style="margin-top:24px;">
+          <div style="font-size:10px;color:var(--text-m);text-transform:uppercase;letter-spacing:.1em;font-weight:700;margin-bottom:10px;">Виконано (${done.length})</div>
+          ${done.map(rowHtml).join('')}
+        </div>` : ''}
+    </div>`;
+
+  updateTodosBadge();
+}
+
+async function addTodo() {
+  const textEl = document.getElementById('todo-new-text');
+  const dateEl = document.getElementById('todo-new-date');
+  const timeEl = document.getElementById('todo-new-time');
+  const text = textEl.value.trim();
+  if (!text) return;
+
+  const res = await fetch('/api/todos', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, dueDate: dateEl.value, dueTime: timeEl.value }),
+  });
+  if (res.ok) {
+    textEl.value = ''; dateEl.value = ''; timeEl.value = '';
+    renderTodosView();
+  } else {
+    showToast('❌ Не вдалося додати завдання');
+  }
+}
+
+async function toggleTodoDone(id, done) {
+  await fetch(`/api/todos/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ done }),
+  });
+  renderTodosView();
+}
+
+async function deleteTodo(id) {
+  await fetch(`/api/todos/${id}`, { method: 'DELETE' });
+  renderTodosView();
+}
+
+async function updateTodosBadge() {
+  try {
+    const res = await fetch('/api/todos');
+    const list = res.ok ? await res.json() : [];
+    const td = isoToday();
+    const open = list.filter(t => !t.done);
+    const dueSoon = open.filter(t => t.due_date && t.due_date <= td);
+    const el = document.getElementById('nb-todos');
+    if (!el) return;
+    if (dueSoon.length > 0) {
+      el.textContent = dueSoon.length;
+      el.classList.add('nav-badge-alert');
+    } else if (open.length > 0) {
+      el.textContent = open.length;
+      el.classList.remove('nav-badge-alert');
+    } else {
+      el.textContent = '';
+      el.classList.remove('nav-badge-alert');
+    }
+  } catch {}
+}
+
 async function updateNotificationBadge() {
   try {
     const res = await fetch('/api/notifications?unacked=1');
@@ -2930,7 +3050,7 @@ async function renderManagerViewBoard(id, name) {
   </div>
   <div class="board">`;
 
-  STAGES.forEach(stage => {
+  STAGES.filter(stage => !stage.vip).forEach(stage => {
     const cards = _managerViewClients.filter(c => c.stage === stage.id && !c.cold);
     html += `
       <div class="col ${stage.vip ? 'vip-col' : ''}">
@@ -2972,7 +3092,13 @@ function openReadOnlyClientDetail(id) {
 
   boardWrap.innerHTML = `
     <div style="padding:20px 28px 60px;max-width:820px;">
-      <button class="btn btn-ghost" style="margin-bottom:16px;" onclick="renderManagerViewBoard(_managerViewId, _managerViewName)">← Назад до перегляду менеджера</button>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+        <button class="btn btn-ghost" onclick="renderManagerViewBoard(_managerViewId, _managerViewName)">← Назад до перегляду менеджера</button>
+        <div style="position:relative;margin-left:auto;">
+          <button class="btn btn-ghost" onclick="toggleAdminTransferMenu(event,'${c.id}')">🔀 Передати іншому менеджеру</button>
+          <div id="admin-transfer-menu" style="display:none;position:absolute;right:0;top:calc(100% + 4px);min-width:200px;background:var(--card-bg);border:1px solid var(--border-s);box-shadow:var(--shadow-lg);z-index:50;"></div>
+        </div>
+      </div>
 
       <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px;">
         <div class="card-avatar" style="width:52px;height:52px;font-size:19px;flex-shrink:0;${c.photo ? 'overflow:hidden;' : `background:linear-gradient(135deg,${stage.color},${stage.color}99)`}">${c.photo ? `<img src="${c.photo}" style="width:100%;height:100%;object-fit:cover;">` : getInitials(c.name)}</div>
@@ -3054,6 +3180,7 @@ async function renderManagersView() {
             <div style="font-size:11px;color:var(--text-s);">${m.role === 'admin' ? 'Адміністратор' : (m.active ? 'Активний' : 'Вимкнений')} ${m.phone ? '· 📞 ' + escHtml(m.phone) : '· без телефону'}</div>
           </div>
           <button class="btn btn-ghost" style="font-size:11px;" onclick="editManagerPhone(${m.id}, '${escHtml(m.phone || '')}')">📞 Телефон</button>
+          <button class="btn btn-ghost" style="font-size:11px;" onclick="resetManagerPassword(${m.id}, '${escHtml(m.display_name)}')">🔑 Скинути пароль</button>
           ${m.role === 'manager' ? `
             <button class="btn btn-ghost" style="font-size:11px;" onclick="toggleManagerActive(${m.id}, ${!m.active})">${m.active ? '⏸️ Вимкнути' : '▶️ Увімкнути'}</button>
             <button class="btn btn-ghost" style="font-size:11px;color:#c05050;border-color:rgba(160,40,40,0.4);" onclick="deleteManagerConfirm(${m.id}, '${escHtml(m.display_name)}')">🗑️ Видалити</button>
@@ -3105,6 +3232,24 @@ async function editManagerPhone(id, currentPhone) {
   });
   toast('✅ Телефон оновлено');
   renderManagersView();
+}
+
+async function resetManagerPassword(id, name) {
+  if (!confirm(`Скинути пароль для "${name}"? Старий пароль одразу перестане працювати.`)) return;
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+  const arr = new Uint32Array(12);
+  crypto.getRandomValues(arr);
+  const newPassword = Array.from(arr, x => chars[x % chars.length]).join('');
+
+  const res = await fetch(`/api/admin/managers/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ newPassword }),
+  });
+  if (!res.ok) { toast('❌ Не вдалося скинути пароль'); return; }
+  // Shown via prompt() (not toast) so admin can select-all + copy — this is
+  // the only time the plaintext password will ever be visible anywhere.
+  prompt(`Новий пароль для "${name}" — скопіюйте зараз, повторно не покажу:`, newPassword);
 }
 
 async function deleteManagerConfirm(id, name) {
@@ -3526,7 +3671,7 @@ function renderStatsView() {
   const total = activeClients.length || 1;
   const stageCounts = STAGES.map(s => ({ ...s, count: activeClients.filter(c => c.stage === s.id).length }));
 
-  // Find "Придбано" by its prob:100 marker instead of a hardcoded stage id —
+  // Find the closed/won stage ("Угода") by its prob:100 marker instead of a hardcoded stage id —
   // stage ids shift whenever a stage is inserted, and a hardcoded number here
   // silently rots (this is what caused the wrong 0% conversion figure).
   const purchasedStage = STAGES.find(s => s.prob === 100);
@@ -3539,6 +3684,32 @@ function renderStatsView() {
   // definition and showed a different number than the sidebar for the same label.
   const noTask = activeClients.filter(c => c.stage !== purchasedId && (!c.tasks || !c.tasks.some(t => !t.done))).length;
 
+  // Lead source breakdown — same source values as the "Звідки дізнався" field
+  // on the client card, so this always matches what managers actually pick.
+  const SOURCE_LABELS = {
+    'OLX': '🏠 OLX',
+    'DOM.RIA': '🏠 DOM.RIA',
+    'Інстаграм': '📷 Інстаграм',
+    'Фейсбук': '📘 Фейсбук',
+    'Тікток': '🎵 Тікток',
+    'Рекомендації': '🤝 Рекомендації',
+    'Банер': '🪧 Банер',
+    'Інше': '💬 Інше',
+  };
+  const SOURCE_COLORS = ['#4a9fd4', '#b08030', '#7a50a8', '#308850', '#d68910', '#a84040', '#5a9bd4', '#6a6a76'];
+  const sourceCountMap = {};
+  activeClients.forEach(c => {
+    const key = c.source || '';
+    sourceCountMap[key] = (sourceCountMap[key] || 0) + 1;
+  });
+  const sourceRows = Object.entries(sourceCountMap)
+    .sort((a, b) => b[1] - a[1])
+    .map(([key, count], i) => ({
+      label: key ? (SOURCE_LABELS[key] || `💬 ${key}`) : '❔ Не вказано',
+      count,
+      color: SOURCE_COLORS[i % SOURCE_COLORS.length],
+    }));
+
   boardWrap.innerHTML = `
     <div style="max-width:700px;display:flex;flex-direction:column;gap:12px;">
       <div style="font-size:11px;color:var(--text-m);">📊 Аналітика по вашій воронці — <b style="color:var(--text-s);">${escHtml(currentUser?.displayName || '')}</b> <span style="color:var(--text-m);">(без холодної бази, ${total} клієнтів)</span></div>
@@ -3550,6 +3721,21 @@ function renderStatsView() {
               <span>${s.icon}</span>
               <span style="font-size:13px;font-weight:600;color:var(--text);">${s.name}</span>
               <span style="margin-left:auto;font-weight:800;color:${s.color};font-size:15px;">${s.count}</span>
+            </div>
+            <div style="background:var(--bg);height:3px;overflow:hidden;">
+              <div style="height:100%;width:${Math.round(s.count/total*100)}%;background:${s.color};transition:width .5s;"></div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+      <div style="background:var(--card-bg);border:1px solid var(--border);padding:22px;box-shadow:var(--shadow);">
+        <div style="font-weight:700;font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--text-s);margin-bottom:18px;">Звідки приходять клієнти</div>
+        ${sourceRows.length === 0 ? `<div style="text-align:center;padding:12px;color:var(--text-m);font-size:12px;">Немає даних</div>` : sourceRows.map(s => `
+          <div style="margin-bottom:14px;">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:5px;">
+              <span style="font-size:13px;font-weight:600;color:var(--text);">${s.label}</span>
+              <span style="margin-left:auto;font-weight:800;color:${s.color};font-size:15px;">${s.count}</span>
+              <span style="font-size:11px;color:var(--text-m);min-width:32px;text-align:right;">${Math.round(s.count/total*100)}%</span>
             </div>
             <div style="background:var(--bg);height:3px;overflow:hidden;">
               <div style="height:100%;width:${Math.round(s.count/total*100)}%;background:${s.color};transition:width .5s;"></div>
@@ -3578,12 +3764,86 @@ function renderStatsView() {
       </div>
 
       <div id="stats-monitoring"></div>
+      ${currentUser?.role === 'admin' ? '<div id="admin-manager-stats"></div>' : ''}
     </div>
   `;
 
   renderMonitoringSection();
   if (_statsAutoRefreshTimer) clearInterval(_statsAutoRefreshTimer);
   _statsAutoRefreshTimer = setInterval(renderMonitoringSection, 45000);
+
+  if (currentUser?.role === 'admin') renderManagerAnalytics();
+}
+
+// Admin-only per-manager breakdown — same metrics as the personal stats above
+// (total active, hot, conversion, no-task), one row per manager, so an admin
+// can see the whole team's pipeline health at a glance instead of clicking
+// into each manager's board individually.
+async function renderManagerAnalytics() {
+  const el = document.getElementById('admin-manager-stats');
+  if (!el) return;
+  el.innerHTML = `<div style="margin-top:20px;padding:22px;background:var(--card-bg);border:1px solid var(--border);box-shadow:var(--shadow);">
+    <div style="font-weight:700;font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--text-s);margin-bottom:16px;">👥 Аналітика по менеджерах</div>
+    <div style="text-align:center;padding:20px;color:var(--text-m);font-size:12px;">Завантаження...</div>
+  </div>`;
+
+  let managers;
+  try {
+    const res = await fetch('/api/admin/managers');
+    managers = res.ok ? await res.json() : [];
+  } catch { managers = []; }
+  managers = managers.filter(m => m.role === 'manager' && m.active);
+
+  const purchasedStage = STAGES.find(s => s.prob === 100);
+  const purchasedId = purchasedStage ? purchasedStage.id : null;
+
+  const rows = await Promise.all(managers.map(async m => {
+    let mClients = [];
+    try {
+      const r = await fetch(`/api/admin/managers/${m.id}/clients`);
+      mClients = r.ok ? await r.json() : [];
+    } catch { mClients = []; }
+    const active = mClients.filter(c => !c.cold);
+    const t = active.length;
+    const hot = active.filter(c => c.hot).length;
+    const converted = purchasedId != null ? active.filter(c => c.stage === purchasedId).length : 0;
+    const noTask = active.filter(c => c.stage !== purchasedId && (!c.tasks || !c.tasks.some(x => !x.done))).length;
+    return { name: m.display_name, total: t, hot, converted, noTask, cold: mClients.length - t };
+  }));
+
+  el.innerHTML = `
+    <div style="margin-top:20px;padding:22px;background:var(--card-bg);border:1px solid var(--border);box-shadow:var(--shadow);">
+      <div style="font-weight:700;font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--text-s);margin-bottom:16px;">👥 Аналітика по менеджерах</div>
+      ${rows.length === 0 ? `<div style="text-align:center;padding:20px;color:var(--text-m);font-size:12px;">Немає активних менеджерів</div>` : `
+      <div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead>
+            <tr style="border-bottom:1px solid var(--border-s);">
+              <th style="text-align:left;padding:8px 10px;color:var(--text-m);font-size:9px;text-transform:uppercase;letter-spacing:.1em;">Менеджер</th>
+              <th style="text-align:right;padding:8px 10px;color:var(--text-m);font-size:9px;text-transform:uppercase;letter-spacing:.1em;">Клієнтів</th>
+              <th style="text-align:right;padding:8px 10px;color:var(--text-m);font-size:9px;text-transform:uppercase;letter-spacing:.1em;">🔥 Гарячих</th>
+              <th style="text-align:right;padding:8px 10px;color:var(--text-m);font-size:9px;text-transform:uppercase;letter-spacing:.1em;">Угод</th>
+              <th style="text-align:right;padding:8px 10px;color:var(--text-m);font-size:9px;text-transform:uppercase;letter-spacing:.1em;">Конверсія</th>
+              <th style="text-align:right;padding:8px 10px;color:var(--text-m);font-size:9px;text-transform:uppercase;letter-spacing:.1em;">⚠️ Без задач</th>
+              <th style="text-align:right;padding:8px 10px;color:var(--text-m);font-size:9px;text-transform:uppercase;letter-spacing:.1em;">❄️ Холодних</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map(r => `
+              <tr style="border-bottom:1px solid var(--border);">
+                <td style="padding:10px;font-weight:600;color:var(--text);">${escHtml(r.name)}</td>
+                <td style="padding:10px;text-align:right;color:var(--text);">${r.total}</td>
+                <td style="padding:10px;text-align:right;color:#b08030;">${r.hot}</td>
+                <td style="padding:10px;text-align:right;color:#308850;font-weight:700;">${r.converted}</td>
+                <td style="padding:10px;text-align:right;color:var(--text-s);">${r.total > 0 ? Math.round(r.converted/r.total*100) : 0}%</td>
+                <td style="padding:10px;text-align:right;color:${r.noTask>0?'#c05050':'var(--text-m)'};font-weight:${r.noTask>0?'700':'400'};">${r.noTask}</td>
+                <td style="padding:10px;text-align:right;color:var(--text-m);">${r.cold}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>`}
+    </div>`;
 }
 
 // ── Real-time funnel activity monitoring (день/тиждень/місяць/пів року) ────
@@ -3598,6 +3858,7 @@ const STATS_RANGES = [
 const STATS_TASK_LABELS = {
   call: { label: 'Дзвінки', icon: '📞', color: '#4f8ef7' },
   consultation: { label: 'Консультації', icon: '💬', color: '#f39c12' },
+  selection: { label: 'Підбір', icon: '🔎', color: '#b08030' },
   inspection: { label: 'Зустрічі/огляди', icon: '🔍', color: '#9b59b6' },
   registration: { label: 'Оформлення', icon: '📝', color: '#e74c3c' },
 };
@@ -3826,12 +4087,17 @@ document.addEventListener('click', e => {
 async function transferClientTo(toManagerId, toName) {
   if (!drawerClientId) return;
   if (!confirm(`Передати цього клієнта менеджеру "${toName}"? Ви більше не бачитимете його у своїй воронці.`)) return;
+  // Purely a text note (не впливає на розрахунки в CRM) — просто фіксується
+  // домовленість про %, щоб не забути перед передачею.
+  const splitInput = prompt('Вкажіть % комісії, який лишається за вами (необов\'язково, лише для запису):', '');
+  if (splitInput === null) return;
+  const splitPercent = splitInput.trim() ? splitInput.trim() : null;
   const id = drawerClientId;
   try {
     const res = await fetch(`/api/clients/${id}/transfer`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ toManagerId }),
+      body: JSON.stringify({ toManagerId, splitPercent }),
     });
     const data = await res.json();
     if (!res.ok) { toast('❌ ' + (data.error || 'Не вдалося передати клієнта')); return; }
@@ -3839,6 +4105,67 @@ async function transferClientTo(toManagerId, toName) {
     closeDrawer();
     renderAll();
     toast(`🔀 Клієнта передано: ${data.toManagerName}`);
+  } catch {
+    toast('❌ Не вдалося передати клієнта');
+  }
+}
+
+// Admin-only equivalent of transferClientTo, used from the read-only "Перегляд
+// менеджера" detail view — same /transfer endpoint (already admin-aware
+// server-side), just targeting _managerViewClients instead of the logged-in
+// admin's own `clients` array, and refreshing that manager's board after.
+async function toggleAdminTransferMenu(e, clientId) {
+  e.stopPropagation();
+  const menu = document.getElementById('admin-transfer-menu');
+  const isOpen = menu.style.display === 'block';
+  if (isOpen) { menu.style.display = 'none'; return; }
+
+  menu.style.display = 'block';
+  menu.innerHTML = `<div style="padding:12px;font-size:11px;color:var(--text-m);">Завантаження...</div>`;
+  try {
+    const res = await fetch('/api/team');
+    const team = res.ok ? await res.json() : [];
+    // Exclude the manager whose board we're already viewing — transferring a
+    // client to its own current owner is a meaningless no-op.
+    const options = team.filter(m => m.id !== _managerViewId);
+    if (!options.length) {
+      menu.innerHTML = `<div style="padding:12px;font-size:11px;color:var(--text-m);">Немає інших менеджерів</div>`;
+      return;
+    }
+    menu.innerHTML = options.map(m => `
+      <div onclick="adminTransferClientTo('${clientId}', ${m.id}, '${escHtml(m.display_name)}')"
+        style="padding:9px 14px;font-size:12px;color:var(--text);cursor:pointer;transition:background .15s;"
+        onmouseover="this.style.background='rgba(255,255,255,0.06)'" onmouseout="this.style.background='none'">
+        ${m.role === 'admin' ? '👑' : '👤'} ${escHtml(m.display_name)}
+      </div>
+    `).join('');
+  } catch {
+    menu.innerHTML = `<div style="padding:12px;font-size:11px;color:#e07070;">Помилка завантаження</div>`;
+  }
+}
+
+document.addEventListener('click', e => {
+  const menu = document.getElementById('admin-transfer-menu');
+  if (menu && menu.style.display === 'block' && !e.target.closest('#admin-transfer-menu') && !e.target.closest('[onclick^="toggleAdminTransferMenu"]')) {
+    menu.style.display = 'none';
+  }
+});
+
+async function adminTransferClientTo(clientId, toManagerId, toName) {
+  if (!confirm(`Передати цього клієнта менеджеру "${toName}"?`)) return;
+  const splitInput = prompt('Вкажіть % комісії, який лишається за попереднім менеджером (необов\'язково, лише для запису):', '');
+  if (splitInput === null) return;
+  const splitPercent = splitInput.trim() ? splitInput.trim() : null;
+  try {
+    const res = await fetch(`/api/clients/${clientId}/transfer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toManagerId, splitPercent }),
+    });
+    const data = await res.json();
+    if (!res.ok) { toast('❌ ' + (data.error || 'Не вдалося передати клієнта')); return; }
+    toast(`🔀 Клієнта передано: ${data.toManagerName}`);
+    renderManagerViewBoard(_managerViewId, _managerViewName);
   } catch {
     toast('❌ Не вдалося передати клієнта');
   }
@@ -3876,7 +4203,8 @@ function renderDrawer() {
     if (c.transferredFrom) {
       const d = c.transferredAt ? new Date(c.transferredAt).toLocaleDateString('uk-UA') : '';
       transferNote.style.display = 'block';
-      transferNote.textContent = `↩️ Отримано від: ${c.transferredFrom}${d ? ' · ' + d : ''}`;
+      transferNote.textContent = `↩️ Отримано від: ${c.transferredFrom}${d ? ' · ' + d : ''}` +
+        (c.transferSplitNote ? ` · 💰 ${c.transferSplitNote}` : '');
     } else {
       transferNote.style.display = 'none';
     }
@@ -3999,7 +4327,7 @@ function changeStageImmediate() {
   renderDrawer();
 }
 
-// Moves a client out of the "Нові передані" transfer-inbox stage into the
+// Moves a client out of the "Новий лід" transfer-inbox stage into the
 // normal funnel start, so a manager can explicitly triage incoming leads.
 function acceptTransferredClient(id) {
   const c = clients.find(x => x.id === id);
@@ -4561,6 +4889,7 @@ function switchModalTab(tab, el) {
 const TASK_TYPES = {
   call:         { label: 'Призначено дзвінок',        icon: '📞', color: '#4f8ef7' },
   consultation: { label: 'Запланована консультація',  icon: '💬', color: '#f39c12' },
+  selection:    { label: 'Запланований підбір',       icon: '🔎', color: '#b08030' },
   inspection:   { label: 'Запланований огляд',        icon: '🔍', color: '#9b59b6' },
   registration: { label: 'Заплановане оформлення',    icon: '📝', color: '#e74c3c' },
 };
@@ -4822,14 +5151,18 @@ function formatDateUA(iso) {
 
 let dayViewDate = isoToday();
 let calendarViewDate = new Date();
+let _calendarTodos = [];
 const CALENDAR_MONTH_NAMES = ['Січень','Лютий','Березень','Квітень','Травень','Червень','Липень','Серпень','Вересень','Жовтень','Листопад','Грудень'];
 const CALENDAR_WEEKDAY_NAMES = ['Пн','Вт','Ср','Чт','Пт','Сб','Нд'];
 
-function renderCalendarView() {
+async function renderCalendarView() {
   const boardWrap = document.getElementById('board-wrap');
   const td = isoToday();
   const tom = offsetDate(1);
   const afterTom = offsetDate(2);
+
+  const res = await fetch('/api/todos');
+  _calendarTodos = res.ok ? await res.json() : [];
 
   boardWrap.innerHTML = `
     <div style="padding:20px 28px 40px;max-width:780px;">
@@ -4861,7 +5194,8 @@ function renderCalendarMonthGrid() {
   const month = calendarViewDate.getMonth(); // 0-indexed
   const td = isoToday();
 
-  // Pending-task counts per date, across all of this manager's clients.
+  // Pending-task counts per date — client tasks + personal to-dos combined,
+  // so the heatmap reflects everything on a manager's plate that day.
   const countByDate = {};
   clients.forEach(c => {
     (c.tasks || []).forEach(t => {
@@ -4870,6 +5204,12 @@ function renderCalendarMonthGrid() {
       countByDate[t.date].count++;
       if (t.date < td) countByDate[t.date].overdue = true;
     });
+  });
+  _calendarTodos.forEach(t => {
+    if (t.done || !t.due_date) return;
+    if (!countByDate[t.due_date]) countByDate[t.due_date] = { count: 0, overdue: false };
+    countByDate[t.due_date].count++;
+    if (t.due_date < td) countByDate[t.due_date].overdue = true;
   });
 
   const firstOfMonth = new Date(year, month, 1);
@@ -4897,16 +5237,43 @@ function renderCalendarMonthGrid() {
       ${cells.map(cell => {
         if (cell.muted) return `<div style="aspect-ratio:1;"></div>`;
         const info = countByDate[cell.dateStr];
+        const count = info ? info.count : 0;
+        const overdue = info ? info.overdue : false;
         const isToday = cell.dateStr === td;
         const isSelected = cell.dateStr === dayViewDate;
-        return `<div onclick="setDayView('${cell.dateStr}')" style="aspect-ratio:1;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;border-radius:4px;gap:1px;
-          background:${isSelected ? 'var(--accent-b)' : isToday ? 'rgba(74,159,212,0.14)' : 'var(--bg2)'};
-          border:1px solid ${isSelected ? 'var(--accent-b)' : isToday ? 'rgba(74,159,212,0.4)' : 'var(--border)'};
-          transition:all .15s;">
+
+        // Heatmap: intensity scales with how many tasks land on that day, so a
+        // packed day visually stands out from a light one at a glance — not
+        // just a small number you have to read. Overdue always reads as red,
+        // regardless of count, since that's more urgent than "busy".
+        let bg = 'var(--bg2)', border = 'var(--border)';
+        if (isSelected) {
+          bg = 'var(--accent-b)'; border = 'var(--accent-b)';
+        } else if (overdue) {
+          bg = 'rgba(224,112,112,0.22)'; border = 'rgba(224,112,112,0.5)';
+        } else if (count >= 5) {
+          bg = 'rgba(240,200,80,0.34)'; border = 'rgba(240,200,80,0.6)';
+        } else if (count >= 3) {
+          bg = 'rgba(240,200,80,0.20)'; border = 'rgba(240,200,80,0.4)';
+        } else if (count >= 1) {
+          bg = 'rgba(240,200,80,0.10)'; border = 'rgba(240,200,80,0.25)';
+        } else if (isToday) {
+          bg = 'rgba(74,159,212,0.14)'; border = 'rgba(74,159,212,0.4)';
+        }
+        const badgeBg = isSelected ? 'rgba(255,255,255,0.28)' : overdue ? 'rgba(224,112,112,0.4)' : 'rgba(240,200,80,0.4)';
+        const badgeColor = isSelected ? '#fff' : overdue ? '#e07070' : '#c89830';
+
+        return `<div onclick="setDayView('${cell.dateStr}')" style="aspect-ratio:1;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;border-radius:4px;gap:2px;
+          background:${bg}; border:1px solid ${border}; transition:all .15s;">
           <div style="font-size:12px;font-weight:${isToday || isSelected ? '800' : '500'};color:${isSelected ? '#fff' : 'var(--text)'};">${cell.day}</div>
-          ${info ? `<div style="font-size:9px;font-weight:700;color:${isSelected ? '#fff' : info.overdue ? '#e07070' : '#f0c84a'};">${info.count}</div>` : ''}
+          ${count ? `<div style="font-size:9px;font-weight:800;line-height:1;padding:1px 5px;border-radius:8px;background:${badgeBg};color:${badgeColor};">${count}</div>` : ''}
         </div>`;
       }).join('')}
+    </div>
+    <div style="display:flex;align-items:center;gap:14px;margin-top:12px;font-size:10px;color:var(--text-m);flex-wrap:wrap;">
+      <span style="display:flex;align-items:center;gap:5px;"><span style="width:10px;height:10px;border-radius:2px;background:rgba(240,200,80,0.12);border:1px solid rgba(240,200,80,0.3);display:inline-block;"></span>мало завдань</span>
+      <span style="display:flex;align-items:center;gap:5px;"><span style="width:10px;height:10px;border-radius:2px;background:rgba(240,200,80,0.34);border:1px solid rgba(240,200,80,0.6);display:inline-block;"></span>багато завдань</span>
+      <span style="display:flex;align-items:center;gap:5px;"><span style="width:10px;height:10px;border-radius:2px;background:rgba(224,112,112,0.22);border:1px solid rgba(224,112,112,0.5);display:inline-block;"></span>є прострочені</span>
     </div>`;
 }
 
@@ -4933,13 +5300,30 @@ function renderDayContent() {
     const tasks = c.tasks.filter(t => t.date === dayViewDate);
     if (tasks.length > 0) groups.push({ client: c, tasks });
   });
+  const dayTodos = _calendarTodos.filter(t => t.due_date === dayViewDate);
 
-  if (groups.length === 0) {
+  if (groups.length === 0 && dayTodos.length === 0) {
     el.innerHTML = `<div class="day-empty"><div class="big">📭</div><p>Завдань на <strong>${formatDateUA(dayViewDate)}</strong> немає</p></div>`;
     return;
   }
 
-  el.innerHTML = groups.map(g => `
+  const personalHtml = dayTodos.length ? `
+    <div class="day-task-group" style="border-left:3px solid #3a9d5f;">
+      <div class="day-task-group-header">
+        <span style="font-size:18px;">✅</span>
+        Мої завдання
+      </div>
+      ${dayTodos.map(t => `
+        <div class="day-task-item ${t.done ? 'done' : ''}">
+          <div class="task-check ${t.done ? 'checked' : ''}" onclick="toggleTodoDay(${t.id}, ${!t.done})">${t.done ? '✓' : ''}</div>
+          <div class="task-info">
+            <div class="task-label">📝 ${escHtml(t.text)}${t.due_time ? ' · 🕐 ' + t.due_time : ''}</div>
+          </div>
+          ${t.done ? '<span style="font-size:12px;color:var(--success);font-weight:600;margin-left:auto;">Виконано ✓</span>' : ''}
+        </div>`).join('')}
+    </div>` : '';
+
+  el.innerHTML = personalHtml + groups.map(g => `
     <div class="day-task-group">
       <div class="day-task-group-header">
         <span style="font-size:18px;">${g.client.hot ? '🔥' : '👤'}</span>
@@ -4964,6 +5348,19 @@ function renderDayContent() {
           </div>`;
       }).join('')}
     </div>`).join('');
+}
+
+async function toggleTodoDay(id, done) {
+  await fetch(`/api/todos/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ done }),
+  });
+  const t = _calendarTodos.find(x => x.id === id);
+  if (t) t.done = done;
+  renderDayContent();
+  renderCalendarMonthGrid();
+  updateTodosBadge();
 }
 
 function toggleTaskDay(clientId, taskId) {
@@ -5154,6 +5551,7 @@ async function boot() {
     hideLoginOverlay();
     renderAll();
     updateNotificationBadge();
+    updateTodosBadge();
     loadManagerViewsList();
     if (typeof renderOwnersBoard === 'function') renderOwnersBoard();
   } catch (err) {
@@ -5775,7 +6173,7 @@ async function runAiScan(files, apiKey) {
 {
   "name": "Ім'я та прізвище або ім'я профілю",
   "phone": "номер телефону якщо є, інакше порожньо",
-  "source": "Instagram або Facebook або Рекомендація або Сайт або Дзвінок або Інше",
+  "source": "OLX або DOM.RIA або Інстаграм або Фейсбук або Тікток або Рекомендації або Банер або Інше",
   "notes": "короткий зміст переписки — що хоче клієнт, деталі"
 }
 Якщо якесь поле невідоме — залиш порожнім рядком.`
