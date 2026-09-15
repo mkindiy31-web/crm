@@ -1079,7 +1079,7 @@
       <div class="field-row">
         <div class="field">
           <label>Звідки дізнався</label>
-          <select id="f-source">
+          <select id="f-source" onchange="toggleReferralField()">
             <option value="">— не вказано —</option>
             <option value="OLX">🏠 OLX</option>
             <option value="DOM.RIA">🏠 DOM.RIA</option>
@@ -1095,6 +1095,10 @@
           <label>Етап воронки</label>
           <select id="f-stage"></select>
         </div>
+      </div>
+      <div class="field" id="f-referral-field" style="display:none;">
+        <label>Хто порекомендував</label>
+        <input type="text" id="f-referral" placeholder="Наприклад: Оля">
       </div>
       <div class="field">
         <label>Статус покупця</label>
@@ -2044,6 +2048,7 @@ function openModal(defaultStage, id) {
     setF('f-phone', c.phone);
     setF('f-phone2', c.phone2);
     setF('f-source', c.source);
+    setF('f-referral', c.referral);
     setF('f-prop-type', c.propType || 'Квартира');
     // rooms multi-select
     const activeRoomValsM = (c.rooms || '').split(',').map(s => s.trim());
@@ -2065,7 +2070,7 @@ function openModal(defaultStage, id) {
   } else {
     document.getElementById('modal-heading').textContent = 'Новий клієнт';
     document.getElementById('modal-icon').textContent = '👤';
-    ['f-name','f-phone','f-phone2','f-source',
+    ['f-name','f-phone','f-phone2','f-source','f-referral',
      'f-budget-min','f-budget-max','f-district','f-area','f-floor',
      'f-timeline','f-payment','f-purpose','f-client-request','f-notes']
       .forEach(fid => setF(fid, ''));
@@ -2074,6 +2079,7 @@ function openModal(defaultStage, id) {
     populateStageSelect(defaultStage !== undefined ? defaultStage : 1); // stage 0 is the transfer inbox, manual adds start at "Зателефонувати"
   }
 
+  toggleReferralField();
   updateHotToggle();
   document.getElementById('modal-overlay').classList.add('open');
   setTimeout(() => document.getElementById('f-name').focus(), 200);
@@ -2110,6 +2116,12 @@ function toggleHot() {
   updateHotToggle();
 }
 
+function toggleReferralField() {
+  const wrap = document.getElementById('f-referral-field');
+  if (!wrap) return;
+  wrap.style.display = document.getElementById('f-source').value === 'Рекомендації' ? 'block' : 'none';
+}
+
 function updateHotToggle() {
   const tog = document.getElementById('hot-toggle');
   document.getElementById('hot-check').textContent = hotValue ? '☑' : '☐';
@@ -2131,6 +2143,7 @@ function saveClient() {
     phone:         document.getElementById('f-phone').value.trim(),
     phone2:        document.getElementById('f-phone2').value.trim(),
     source:        document.getElementById('f-source').value,
+    referral:      document.getElementById('f-source').value === 'Рекомендації' ? document.getElementById('f-referral').value.trim() : '',
     stage:         parseInt(document.getElementById('f-stage').value),
     hot:           hotValue,
     propType:      document.getElementById('f-prop-type').value,
@@ -3112,7 +3125,7 @@ function openReadOnlyClientDetail(id) {
       <div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:18px;font-size:13px;color:var(--text-s);">
         ${c.phone ? `<div>📞 ${escHtml(c.phone)}</div>` : ''}
         ${c.phone2 ? `<div>📞 ${escHtml(c.phone2)}</div>` : ''}
-        ${c.source ? `<div>📍 ${escHtml(c.source)}</div>` : ''}
+        ${c.source ? `<div>📍 ${escHtml(c.source)}${c.referral ? ` (${escHtml(c.referral)})` : ''}</div>` : ''}
       </div>
 
       ${specs.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:14px;margin-bottom:20px;padding:16px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;">
@@ -6213,6 +6226,7 @@ async function runAiScan(files, apiKey) {
     fSet('f-phone',          info.phone);
     fSet('f-source',         info.source);
     fSet('f-client-request', info.notes);
+    toggleReferralField();
 
     // switch to contact tab to show result
     const contactTab = document.querySelector('.modal-tab-btn');
