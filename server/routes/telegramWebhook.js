@@ -109,22 +109,30 @@ async function findClientsByName(userId, name) {
   return rows;
 }
 
-// Finds a Ukrainian-mobile-shaped phone number anywhere in free text, regardless
-// of format (+380671234567, 380671234567, 0671234567, with spaces or dashes in
-// between) — reuses the exact same normalizePhone() the rest of the app matches
-// clients by, so a manager can type the number however they like. Also flags a
+// Finds a phone number anywhere in free text, regardless of format
+// (+380671234567, 380671234567, 0671234567, with spaces or dashes in between)
+// — reuses the exact same normalizePhone() the rest of the app matches clients
+// by, so a manager can type the number however they like. Also flags a
 // digit-run that clearly LOOKS like an attempted phone number but has the wrong
 // digit count (a typo) — e.g. one digit too many — as `invalidCandidate`, so the
 // caller can say "that number looks wrong" instead of silently falling through
 // to a name search (a wrong phone number should never be guessed/auto-corrected:
 // digits could be missing or extra anywhere, and guessing risks attaching the
 // wrong number to a client).
+//
+// Ukrainian numbers (local shorthand or +380) are matched by exact digit count,
+// same as before. Foreign numbers are accepted too, but only when written with
+// an explicit leading "+" — that's the one unambiguous signal that the digits
+// are a full international number rather than some other unrelated number the
+// manager typed (an address, a budget, a date range, etc).
 function extractPhoneFromText(text) {
   const candidates = text.match(/\+?\d[\d\s\-()]{7,16}\d/g) || [];
   let invalidCandidate = null;
   for (const cand of candidates) {
     const norm = normalizePhone(cand);
-    if (norm && norm.length === 12 && norm.startsWith('380')) {
+    const isUkrainian = norm && norm.length === 12 && norm.startsWith('380');
+    const isExplicitForeign = norm && !isUkrainian && cand.trim().startsWith('+') && norm.length >= 8 && norm.length <= 15;
+    if (isUkrainian || isExplicitForeign) {
       return { valid: norm, invalidCandidate: null };
     }
     const digitsOnly = cand.replace(/\D/g, '');
