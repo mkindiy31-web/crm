@@ -3,7 +3,7 @@ const express = require('express');
 const { pool } = require('../db');
 const { normalizePhone } = require('../phone');
 const { upsertClientAndNotify } = require('../clientOps');
-const { sendTelegramMessage, getFilePath, downloadFileAsBase64, TASK_LABELS } = require('../telegram');
+const { sendTelegramMessage, getFilePath, downloadFileAsBase64, TASK_LABELS, addDaysISO, kyivTodayISO } = require('../telegram');
 const { extractBuyers, extractTextUpdate, extractPersonalTodo, extractClientTaskByName, extractNewClientFromText } = require('../aiIntake');
 const { STAGES } = require('../stages');
 
@@ -285,11 +285,30 @@ async function processPersonalTodo(userId, text) {
   if (!user) return;
   const s = user.tg_settings || {};
 
-  let todo = { task: text.trim(), dueDate: '', dueTime: '' };
+  let todo = { task: text.trim(), dueDate: '', dueTime: '', repeatDays: 1 };
   try {
     todo = await extractPersonalTodo(text);
   } catch (err) {
     console.error('extractPersonalTodo failed, storing raw text:', err.message);
+  }
+
+  // A "next N days" / "every day for a week" request — one row per day so
+  // each shows up on its own date in the to-do list and calendar, instead of
+  // one task that would only ever appear once.
+  if (todo.repeatDays > 1) {
+    const startDate = todo.dueDate || kyivTodayISO();
+    const dates = Array.from({ length: todo.repeatDays }, (_, i) => addDaysISO(startDate, i));
+    for (const d of dates) {
+      await pool.query(
+        'INSERT INTO personal_tasks (user_id, text, due_date, due_time) VALUES ($1, $2, $3, $4)',
+        [userId, todo.task.slice(0, 500), d, todo.dueTime || null]
+      );
+    }
+    await sendTelegramMessage(
+      s.token, s.chatId,
+      `✅ Додано в мій to-do список на ${todo.repeatDays} дні поспіль:\n📝 ${todo.task}\n📅 ${dates[0]} — ${dates[dates.length - 1]}${todo.dueTime ? ' щодня о ' + todo.dueTime : ''}`
+    );
+    return;
   }
 
   await pool.query(

@@ -226,4 +226,6 @@ module.exports = {
   getFilePath,
   downloadFileAsBase64,
   TASK_LABELS,
+  addDaysISO,
+  kyivTodayISO,
 };

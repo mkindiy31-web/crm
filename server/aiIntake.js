@@ -365,13 +365,16 @@ async function extractPersonalTodo(text) {
 
 Повідомлення: "${clip(text)}"
 
-Перетвори це на короткий пункт to-do списку та, якщо в повідомленні згадана дата чи день (сьогодні/завтра/післязавтра/день тижня/конкретне число), визнач її. Час (година) потрібен, лише якщо він явно згаданий — інакше залиш порожнім, це нормально для to-do без точного часу. Поверни ТІЛЬКИ JSON, без пояснень:
+Перетвори це на короткий пункт to-do списку та, якщо в повідомленні згадана дата чи день (сьогодні/завтра/післязавтра/день тижня/конкретне число), визнач її. Час (година) потрібен, лише якщо він явно згаданий — інакше залиш порожнім, це нормально для to-do без точного часу.
+
+Також визнач, чи це завдання потрібно повторити кожен день протягом кількох днів поспіль (наприклад "на наступні 4 дні", "кожен день цього тижня", "щодня 3 дні"). Якщо так — вкажи кількість днів у repeatDays і дату ПЕРШОГО повторення в date (якщо початкова дата не вказана явно — почни з сьогодні). Якщо завдання разове — repeatDays = 1. Поверни ТІЛЬКИ JSON, без пояснень:
 {
   "task": "короткий, чіткий опис справи українською, без зайвих слів",
-  "hasDate": true або false — чи згадана в повідомленні дата/день,
-  "date": "YYYY-MM-DD — переведи відносну дату у конкретну відносно сьогодні, тільки якщо hasDate true",
+  "hasDate": true або false — чи згадана в повідомленні дата/день (true також якщо це повторюване завдання),
+  "date": "YYYY-MM-DD — дата виконання (або дата першого повторення, якщо repeatDays > 1), відносно сьогодні, тільки якщо hasDate true",
   "hasTime": true або false — чи згадана конкретна година,
-  "time": "HH:MM 24-годинний формат, тільки якщо hasTime true"
+  "time": "HH:MM 24-годинний формат, тільки якщо hasTime true",
+  "repeatDays": число — скільки днів поспіль повторити це завдання (1, якщо воно разове)
 }`;
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -396,24 +399,27 @@ async function extractPersonalTodo(text) {
   const data = await response.json();
   const raw = data.content[0].text.trim();
   const jsonMatch = raw.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return { task: clip(text), dueDate: '', dueTime: '' };
+  if (!jsonMatch) return { task: clip(text), dueDate: '', dueTime: '', repeatDays: 1 };
 
   let parsed;
   try {
     parsed = JSON.parse(jsonMatch[0]);
   } catch {
-    return { task: clip(text), dueDate: '', dueTime: '' };
+    return { task: clip(text), dueDate: '', dueTime: '', repeatDays: 1 };
   }
 
   const date = clip(parsed.date);
   const time = clip(parsed.time);
   const validDate = /^\d{4}-\d{2}-\d{2}$/.test(date);
   const validTime = /^\d{2}:\d{2}$/.test(time);
+  const repeatDaysRaw = parseInt(parsed.repeatDays, 10);
+  const repeatDays = Number.isFinite(repeatDaysRaw) && repeatDaysRaw >= 1 && repeatDaysRaw <= 60 ? repeatDaysRaw : 1;
 
   return {
     task: clip(parsed.task) || clip(text),
     dueDate: (parsed.hasDate === true || parsed.hasDate === 'true') && validDate ? date : '',
     dueTime: (parsed.hasTime === true || parsed.hasTime === 'true') && validTime ? time : '',
+    repeatDays,
   };
 }
 
