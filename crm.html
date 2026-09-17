@@ -1083,6 +1083,7 @@
             <option value="">— не вказано —</option>
             <option value="OLX">🏠 OLX</option>
             <option value="DOM.RIA">🏠 DOM.RIA</option>
+            <option value="rieltor.ua">🏠 rieltor.ua</option>
             <option value="Інстаграм">📷 Інстаграм</option>
             <option value="Фейсбук">📘 Фейсбук</option>
             <option value="Тікток">🎵 Тікток</option>
@@ -3702,6 +3703,7 @@ function renderStatsView() {
   const SOURCE_LABELS = {
     'OLX': '🏠 OLX',
     'DOM.RIA': '🏠 DOM.RIA',
+    'rieltor.ua': '🏠 rieltor.ua',
     'Інстаграм': '📷 Інстаграм',
     'Фейсбук': '📘 Фейсбук',
     'Тікток': '🎵 Тікток',
@@ -3709,7 +3711,7 @@ function renderStatsView() {
     'Банер': '🪧 Банер',
     'Інше': '💬 Інше',
   };
-  const SOURCE_COLORS = ['#4a9fd4', '#b08030', '#7a50a8', '#308850', '#d68910', '#a84040', '#5a9bd4', '#6a6a76'];
+  const SOURCE_COLORS = ['#4a9fd4', '#b08030', '#7a50a8', '#308850', '#d68910', '#a84040', '#5a9bd4', '#6a6a76', '#4a7ab0'];
   const sourceCountMap = {};
   activeClients.forEach(c => {
     const key = c.source || '';
@@ -6186,7 +6188,7 @@ async function runAiScan(files, apiKey) {
 {
   "name": "Ім'я та прізвище або ім'я профілю",
   "phone": "номер телефону якщо є, інакше порожньо",
-  "source": "OLX або DOM.RIA або Інстаграм або Фейсбук або Тікток або Рекомендації або Банер або Інше",
+  "source": "OLX або DOM.RIA або rieltor.ua або Інстаграм або Фейсбук або Тікток або Рекомендації або Банер або Інше",
   "notes": "короткий зміст переписки — що хоче клієнт, деталі"
 }
 Якщо якесь поле невідоме — залиш порожнім рядком.`
