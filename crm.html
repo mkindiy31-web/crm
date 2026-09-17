@@ -177,6 +177,21 @@
   }
   .card:hover { background: var(--card-hover); border-color: var(--border-s); transform: translateY(-1px); box-shadow: 0 6px 24px rgba(0,0,0,0.5); }
   .card.dragging { opacity: 0.35; cursor: grabbing; }
+  .card.deal-card { border: 1px solid rgba(48,136,80,0.4); box-shadow: 0 0 0 1px rgba(48,136,80,0.15), 0 4px 16px rgba(48,136,80,0.1); }
+  .card.deal-card:hover { box-shadow: 0 0 0 1px rgba(48,136,80,0.3), 0 6px 24px rgba(48,136,80,0.2); }
+  .deal-badge {
+    margin-top: 6px; padding: 4px 8px; background: rgba(48,136,80,0.12);
+    border: 1px solid rgba(48,136,80,0.35); font-size: 10px; color: #308850;
+    text-align: center; letter-spacing: 0.08em; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; gap: 5px;
+  }
+  @keyframes deal-pop {
+    0%   { transform: scale(0.4) rotate(-6deg); opacity: 0; }
+    55%  { transform: scale(1.12) rotate(3deg); opacity: 1; }
+    75%  { transform: scale(0.96) rotate(-1deg); }
+    100% { transform: scale(1) rotate(0); }
+  }
+  .card.deal-just-closed { animation: deal-pop 0.5s cubic-bezier(.34,1.56,.64,1); }
   .card { transition: transform 0.18s ease, box-shadow 0.2s; }
   .card.cd-shift-down  { transform: translateY(8px); }
   .card.cd-shift-up    { transform: translateY(-8px); }
@@ -1511,6 +1526,23 @@ const STAGES = [
 // stage ids shift whenever a stage is inserted/removed/reordered.
 const DEAL_STAGE_ID = STAGES.find(s => s.prob === 100)?.id ?? STAGES.length - 1;
 const VIP_STAGE_ID = STAGES.find(s => s.vip)?.id ?? STAGES.length - 1;
+// Client ids whose card should play the one-time "just closed" pop animation
+// on the very next render — populated by onEnteredDealStage(), consumed (and
+// removed) by renderCard() so it never replays on a later re-render.
+const _justClosedDealIds = new Set();
+
+// Called whenever a client's stage actually transitions INTO the deal stage
+// (never on re-saves that leave it there) — clears now-irrelevant open tasks,
+// marks the card for its pop-in animation, and fires the money confetti.
+function onEnteredDealStage(client) {
+  const hadPending = (client.tasks || []).some(t => !t.done);
+  if (hadPending) {
+    client.tasks = (client.tasks || []).filter(t => t.done);
+    addHistory(client, 'stage_change', '🧹 Відкриті завдання знято — угоду закрито');
+  }
+  _justClosedDealIds.add(client.id);
+  launchConfetti(client);
+}
 
 // ── OWNER STAGES ─────────────────────────────────────────────────────
 const OWNER_STAGES = [
@@ -1914,7 +1946,7 @@ function _onCDUp(e) {
   if (prevStage !== stageId) {
     addHistory(client, 'stage_change', `Етап: ${STAGES[prevStage]?.name} → ${STAGES[stageId].icon} ${STAGES[stageId].name}`);
     toast(`↪️ Переміщено: ${STAGES[stageId].icon} ${STAGES[stageId].name}`);
-    if (stageId === 8 || stageId === 9) launchConfetti(client);
+    if (stageId === DEAL_STAGE_ID) onEnteredDealStage(client);
   }
 
   save(); renderAll();
@@ -1978,12 +2010,18 @@ function renderCard(c) {
   }
 
   // VIP badge only (regular progress bar and commission removed per user request)
+  const isDeal = c.stage === DEAL_STAGE_ID;
   const progressHtml = stage.vip
     ? `<div style="margin-top:6px;padding:4px 8px;background:rgba(200,160,32,0.1);border:1px solid rgba(200,160,32,0.25);font-size:10px;color:#c8a020;text-align:center;letter-spacing:0.1em;">👑 ПОСТІЙНИЙ ІНВЕСТОР</div>`
+    : isDeal
+    ? `<div class="deal-badge">🏆 УГОДА ЗАКРИТА</div>`
     : '';
 
+  const justClosed = isDeal && _justClosedDealIds.has(c.id);
+  if (justClosed) _justClosedDealIds.delete(c.id);
+
   return `
-    <div class="card ${!hasPending ? 'no-task-card' : ''}" data-id="${c.id}" onclick="handleCardClick(event,'${c.id}')"
+    <div class="card ${!hasPending ? 'no-task-card' : ''} ${isDeal ? 'deal-card' : ''} ${justClosed ? 'deal-just-closed' : ''}" data-id="${c.id}" onclick="handleCardClick(event,'${c.id}')"
       style="border-left:3px solid ${stage ? stage.color : 'transparent'};background:linear-gradient(135deg,${stage ? stage.color+'14' : 'transparent'} 0%,var(--card-bg) 55%);">
       <div class="card-top">
         <div class="card-avatar" style="${c.photo ? 'overflow:hidden;' : `background:linear-gradient(135deg,${color},${color}99)`}">${c.photo ? `<img src="${c.photo}" style="width:100%;height:100%;object-fit:cover;">` : initials}</div>
@@ -3018,8 +3056,10 @@ function renderReadOnlyCard(c) {
     taskPreviewHtml = `<div class="no-task-indicator">⬜ без завдань</div>`;
   }
 
+  const isDealRO = c.stage === DEAL_STAGE_ID;
+
   return `
-    <div class="card" onclick="openReadOnlyClientDetail('${c.id}')" style="cursor:pointer;border-left:3px solid ${stage ? stage.color : 'transparent'};background:linear-gradient(135deg,${stage ? stage.color+'14' : 'transparent'} 0%,var(--card-bg) 55%);">
+    <div class="card ${isDealRO ? 'deal-card' : ''}" onclick="openReadOnlyClientDetail('${c.id}')" style="cursor:pointer;border-left:3px solid ${stage ? stage.color : 'transparent'};background:linear-gradient(135deg,${stage ? stage.color+'14' : 'transparent'} 0%,var(--card-bg) 55%);">
       <div class="card-top">
         <div class="card-avatar" style="${c.photo ? 'overflow:hidden;' : `background:linear-gradient(135deg,${color},${color}99)`}">${c.photo ? `<img src="${c.photo}" style="width:100%;height:100%;object-fit:cover;">` : initials}</div>
         <div style="flex:1;min-width:0;">
@@ -3033,6 +3073,7 @@ function renderReadOnlyCard(c) {
       ${c.phone ? `<div class="card-phone">📞 ${escHtml(c.phone)}</div>` : ''}
       ${c.clientRequest ? `<div class="card-note">${escHtml(c.clientRequest)}</div>` : c.notes ? `<div class="card-note">${escHtml(c.notes)}</div>` : ''}
       ${taskPreviewHtml}
+      ${isDealRO ? `<div class="deal-badge">🏆 УГОДА ЗАКРИТА</div>` : ''}
       <div class="card-footer">
         <span class="card-date">📆 ${c.date}</span>
       </div>
@@ -4336,7 +4377,13 @@ function changeStageImmediate() {
   if (!drawerClientId) return;
   const c = clients.find(x => x.id === drawerClientId);
   if (!c) return;
-  c.stage = parseInt(document.getElementById('dr-stage-select').value);
+  const prevStage = c.stage;
+  const newStage = parseInt(document.getElementById('dr-stage-select').value);
+  c.stage = newStage;
+  if (prevStage !== newStage) {
+    addHistory(c, 'stage_change', `Етап: ${STAGES[prevStage]?.name} → ${STAGES[newStage]?.icon} ${STAGES[newStage]?.name}`);
+    if (newStage === DEAL_STAGE_ID) onEnteredDealStage(c);
+  }
   save();
   renderAll();
   renderDrawer();
@@ -4387,7 +4434,9 @@ function saveClientFull(silent) {
   if (phoneInput) c.phone = phoneInput.value.trim();
   const sourceInput = document.getElementById('dr-source-input');
   if (sourceInput) c.source = sourceInput.value;
+  const prevStageFull = c.stage;
   c.stage   = parseInt(document.getElementById('dr-stage-select').value);
+  if (prevStageFull !== c.stage && c.stage === DEAL_STAGE_ID) onEnteredDealStage(c);
   c.hot     = document.getElementById('dr-hot-input').checked;
   const coldInpSave = document.getElementById('dr-cold-input');
   if (coldInpSave) c.cold = coldInpSave.checked;
