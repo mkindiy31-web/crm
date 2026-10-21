@@ -3283,10 +3283,17 @@ async function editManagerPhone(id, currentPhone) {
 
 async function resetManagerPassword(id, name) {
   if (!confirm(`Скинути пароль для "${name}"? Старий пароль одразу перестане працювати.`)) return;
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
-  const arr = new Uint32Array(12);
-  crypto.getRandomValues(arr);
-  const newPassword = Array.from(arr, x => chars[x % chars.length]).join('');
+
+  const custom = (prompt(`Свій новий пароль для "${name}" (мінімум 6 символів) — або залиште порожнім, щоб згенерувати випадковий:`, '') || '').trim();
+  if (custom && custom.length < 6) { toast('❌ Пароль має бути не менше 6 символів'); return; }
+
+  let newPassword = custom;
+  if (!newPassword) {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+    const arr = new Uint32Array(12);
+    crypto.getRandomValues(arr);
+    newPassword = Array.from(arr, x => chars[x % chars.length]).join('');
+  }
 
   const res = await fetch(`/api/admin/managers/${id}`, {
     method: 'PATCH',
