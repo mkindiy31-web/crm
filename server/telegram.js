@@ -20,18 +20,74 @@ async function sendTelegramMessage(token, chatId, text) {
   }
 }
 
+// Same as sendTelegramMessage but attaches an inline keyboard — `rows` is an
+// array of button rows, each row an array of { text, callback_data }.
+async function sendTelegramKeyboard(token, chatId, text, rows) {
+  if (!token || !chatId) return false;
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId, text, parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: rows },
+      }),
+    });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
+// Dismisses the little loading spinner Telegram shows on an inline button
+// after it's tapped — required on every callback_query, even just to hide it
+// with no visible toast. `showAlert` pops the text as a blocking popup instead
+// of the usual tiny toast, used for "this was already handled" type notices.
+async function answerCallbackQuery(token, callbackQueryId, text, showAlert) {
+  if (!token || !callbackQueryId) return false;
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ callback_query_id: callbackQueryId, text: text || undefined, show_alert: !!showAlert }),
+    });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function setWebhook(token, url, secretToken) {
   if (!token || !url) return false;
   try {
     const r = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, secret_token: secretToken, allowed_updates: ['message'] }),
+      body: JSON.stringify({ url, secret_token: secretToken, allowed_updates: ['message', 'callback_query'] }),
     });
     const j = await r.json().catch(() => ({}));
     return !!j.ok;
   } catch {
     return false;
+  }
+}
+
+// Re-registers every enabled manager's webhook on server startup, so a change
+// to allowed_updates (like adding callback_query above) reaches already
+// configured bots without each manager having to re-save their Telegram
+// settings by hand. Cheap and idempotent — safe to run on every boot.
+async function reRegisterAllWebhooks(pool) {
+  const base = process.env.PUBLIC_BASE_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '');
+  if (!base) return;
+  const { rows: users } = await pool.query(
+    `SELECT id, tg_settings FROM users
+     WHERE active = true AND tg_settings->>'enabled' = 'true'
+       AND coalesce(tg_settings->>'token', '') != '' AND coalesce(tg_settings->>'webhookSecret', '') != ''`
+  );
+  for (const user of users) {
+    const s = user.tg_settings || {};
+    const url = `${base}/api/telegram-webhook/${user.id}`;
+    await setWebhook(s.token, url, s.webhookSecret).catch(() => {});
   }
 }
 
@@ -219,10 +275,13 @@ async function checkAndSendDailyDigest(pool) {
 
 module.exports = {
   sendTelegramMessage,
+  sendTelegramKeyboard,
+  answerCallbackQuery,
   checkAndNotifyAll,
   checkAndSendDailyDigest,
   setWebhook,
   deleteWebhook,
+  reRegisterAllWebhooks,
   getFilePath,
   downloadFileAsBase64,
   TASK_LABELS,

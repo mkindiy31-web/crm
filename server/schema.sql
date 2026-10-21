@@ -96,3 +96,20 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_manager_created ON events(manager_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
+
+-- A client recognized by AI screenshot analysis in Telegram, held here until
+-- the manager answers the two mandatory follow-up questions (lead source via
+-- button, then budget + what they're looking for as free text) — only then
+-- does it become a real row in `clients`. `step` tracks which question is
+-- outstanding; `prompted_at`/`last_reminded_at` drive the hourly nag if the
+-- manager leaves it unanswered.
+CREATE TABLE IF NOT EXISTS pending_intakes (
+  id TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  client_data JSONB NOT NULL,
+  step TEXT NOT NULL DEFAULT 'source', -- 'source' | 'details'
+  prompted_at TIMESTAMPTZ,
+  last_reminded_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_pending_intakes_user ON pending_intakes(user_id, created_at);

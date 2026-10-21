@@ -423,4 +423,69 @@ async function extractPersonalTodo(text) {
   };
 }
 
-module.exports = { extractBuyers, extractTextUpdate, extractPersonalTodo, extractClientTaskByName, extractNewClientFromText, TASK_TYPES };
+// Answers the mandatory Telegram follow-up question asked right after a new
+// client is recognized from a screenshot ("який бюджет і що шукає клієнт?") —
+// pulls out a short property-need description plus a budget figure/range in
+// dollars. Best-effort: if the model can't find a number, budgets come back 0
+// rather than blocking the manager's answer from completing the client card.
+async function extractBudgetAndNeed(text) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return { clientRequest: clip(text), budgetMin: 0, budgetMax: 0 };
+
+  const prompt = `Менеджер з нерухомості щойно відповів на обов'язкове запитання "Який бюджет і що шукає клієнт?" для нового клієнта.
+
+Повідомлення менеджера: "${clip(text)}"
+
+Витягни:
+1. Короткий опис потреби клієнта українською (тип нерухомості, район, кімнатність, інші побажання) — лише те, що реально сказано, нічого не вигадуй.
+2. Бюджет у доларах. Якщо вказаний діапазон (наприклад "50-70 тисяч") — це budgetMin і budgetMax. Якщо вказана лише одна сума — запиши її в budgetMax, а budgetMin залиш 0. Якщо бюджет взагалі не згаданий — обидва 0.
+
+Поверни ТІЛЬКИ JSON, без пояснень:
+{
+  "clientRequest": "короткий опис потреби українською",
+  "budgetMin": число або 0,
+  "budgetMax": число або 0
+}`;
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: process.env.AI_INTAKE_MODEL || 'claude-haiku-4-5',
+      max_tokens: 512,
+      messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || response.statusText);
+  }
+
+  const data = await response.json();
+  const raw = data.content[0].text.trim();
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return { clientRequest: clip(text), budgetMin: 0, budgetMax: 0 };
+
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonMatch[0]);
+  } catch {
+    return { clientRequest: clip(text), budgetMin: 0, budgetMax: 0 };
+  }
+
+  const budgetMin = Number(parsed.budgetMin);
+  const budgetMax = Number(parsed.budgetMax);
+
+  return {
+    clientRequest: clip(parsed.clientRequest) || clip(text),
+    budgetMin: Number.isFinite(budgetMin) && budgetMin > 0 ? budgetMin : 0,
+    budgetMax: Number.isFinite(budgetMax) && budgetMax > 0 ? budgetMax : 0,
+  };
+}
+
+module.exports = { extractBuyers, extractTextUpdate, extractPersonalTodo, extractClientTaskByName, extractNewClientFromText, extractBudgetAndNeed, TASK_TYPES };

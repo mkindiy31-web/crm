@@ -3,8 +3,8 @@ const express = require('express');
 const { pool } = require('../db');
 const { normalizePhone } = require('../phone');
 const { upsertClientAndNotify } = require('../clientOps');
-const { sendTelegramMessage, getFilePath, downloadFileAsBase64, TASK_LABELS, addDaysISO, kyivTodayISO } = require('../telegram');
-const { extractBuyers, extractTextUpdate, extractPersonalTodo, extractClientTaskByName, extractNewClientFromText } = require('../aiIntake');
+const { sendTelegramMessage, sendTelegramKeyboard, answerCallbackQuery, getFilePath, downloadFileAsBase64, TASK_LABELS, addDaysISO, kyivTodayISO } = require('../telegram');
+const { extractBuyers, extractTextUpdate, extractPersonalTodo, extractClientTaskByName, extractNewClientFromText, extractBudgetAndNeed } = require('../aiIntake');
 const { STAGES } = require('../stages');
 
 const router = express.Router();
@@ -143,6 +143,184 @@ function extractPhoneFromText(text) {
   return { valid: null, invalidCandidate };
 }
 
+// Same 9 lead sources as the "Звідки дізнався" dropdown in the CRM itself
+// (crm.html) — kept in sync by hand since this list rarely changes.
+const SOURCE_OPTIONS = [
+  { key: 'OLX', label: '🏠 OLX' },
+  { key: 'DOM.RIA', label: '🏠 DOM.RIA' },
+  { key: 'rieltor.ua', label: '🏠 rieltor.ua' },
+  { key: 'Інстаграм', label: '📷 Інстаграм' },
+  { key: 'Фейсбук', label: '📘 Фейсбук' },
+  { key: 'Тікток', label: '🎵 Тікток' },
+  { key: 'Рекомендації', label: '🤝 Рекомендації' },
+  { key: 'Банер', label: '🪧 Банер' },
+  { key: 'Інше', label: '💬 Інше' },
+];
+
+function sourceKeyboardRows(pendingId) {
+  const rows = [];
+  for (let i = 0; i < SOURCE_OPTIONS.length; i += 2) {
+    const row = [SOURCE_OPTIONS[i], SOURCE_OPTIONS[i + 1]]
+      .filter(Boolean)
+      .map((opt, j) => ({ text: opt.label, callback_data: `src:${pendingId}:${i + j}` }));
+    rows.push(row);
+  }
+  return rows;
+}
+
+async function sendSourcePrompt(s, row, isReminder) {
+  const c = row.client_data;
+  const prefix = isReminder
+    ? '⏰ Нагадування — ще не заповнено.\n\n'
+    : '🆕 Новий клієнт розпізнаний AI — ';
+  const text = `${prefix}<b>${c.name}</b>${c.phone ? ' (' + c.phone + ')' : ''}\n\n📍 Звідки прийшов клієнт?`;
+  await sendTelegramKeyboard(s.token, s.chatId, text, sourceKeyboardRows(row.id));
+}
+
+async function sendDetailsPrompt(s, row, isReminder) {
+  const c = row.client_data;
+  const prefix = isReminder ? '⏰ Нагадування — ' : `✅ Джерело: ${c.source}\n`;
+  await sendTelegramMessage(s.token, s.chatId,
+    `${prefix}Напишіть одним повідомленням: який бюджет і що шукає клієнт <b>${c.name}</b>?\n\n(наприклад: "шукає 2-кімнатну в центрі, бюджет 60-70 тисяч")`);
+}
+
+// Sends the next outstanding question for this manager's oldest unfinished
+// intake, if one hasn't already been sent — client cards queue up one at a
+// time per manager so two screenshot batches never produce overlapping
+// prompts. A no-op when the oldest pending row is already waiting on an
+// answer (prompted_at set) or there's nothing pending at all.
+async function advancePendingIntakeQueue(userId) {
+  const { rows: userRows } = await pool.query(
+    'SELECT tg_settings FROM users WHERE id = $1 AND active = true',
+    [userId]
+  );
+  const s = userRows[0]?.tg_settings || {};
+  if (!s.enabled || !s.token || !s.chatId) return;
+
+  const { rows } = await pool.query(
+    'SELECT * FROM pending_intakes WHERE user_id = $1 ORDER BY created_at ASC LIMIT 1',
+    [userId]
+  );
+  const row = rows[0];
+  if (!row || row.prompted_at) return;
+
+  if (row.step === 'source') await sendSourcePrompt(s, row, false);
+  else await sendDetailsPrompt(s, row, false);
+
+  await pool.query('UPDATE pending_intakes SET prompted_at = now() WHERE id = $1', [row.id]);
+}
+
+async function getActiveDetailsIntake(userId) {
+  const { rows } = await pool.query(
+    "SELECT * FROM pending_intakes WHERE user_id = $1 AND step = 'details' ORDER BY created_at ASC LIMIT 1",
+    [userId]
+  );
+  return rows[0] || null;
+}
+
+// Handles a tap on one of the source buttons sent by sendSourcePrompt — moves
+// the pending intake from step 'source' to 'details' and prompts the budget/
+// need question next. Silently no-ops (just dismisses the spinner) if the
+// row is already gone — e.g. a stale button tapped after the intake already
+// completed some other way.
+async function handleSourceSelection(userId, pendingId, idx, callbackQueryId, token) {
+  const opt = SOURCE_OPTIONS[idx];
+  if (!opt) { await answerCallbackQuery(token, callbackQueryId, 'Помилка вибору'); return; }
+
+  const { rows } = await pool.query(
+    "SELECT * FROM pending_intakes WHERE id = $1 AND user_id = $2 AND step = 'source'",
+    [pendingId, userId]
+  );
+  const row = rows[0];
+  if (!row) { await answerCallbackQuery(token, callbackQueryId, 'Вже оброблено', true); return; }
+
+  const updatedData = { ...row.client_data, source: opt.key };
+  await pool.query(
+    "UPDATE pending_intakes SET client_data = $1, step = 'details', prompted_at = NULL WHERE id = $2",
+    [updatedData, pendingId]
+  );
+  await answerCallbackQuery(token, callbackQueryId, `Обрано: ${opt.key}`);
+  await advancePendingIntakeQueue(userId);
+}
+
+// Handles the manager's free-text answer to "який бюджет і що шукає клієнт?"
+// — the last mandatory step. Parses budget/need via AI (best-effort), then
+// finally writes the client into the real `clients` table and clears the
+// pending row. Any text at all completes this step — a parsing miss just
+// means the budget comes back empty, never blocks the manager a second time.
+async function finalizePendingIntake(userId, row, text) {
+  const { rows: userRows } = await pool.query(
+    'SELECT id, display_name, tg_settings FROM users WHERE id = $1 AND active = true',
+    [userId]
+  );
+  const user = userRows[0];
+  if (!user) return;
+  const s = user.tg_settings || {};
+  const reqUser = { id: user.id, displayName: user.display_name };
+
+  let info = { clientRequest: text.trim(), budgetMin: 0, budgetMax: 0 };
+  try {
+    info = await extractBudgetAndNeed(text);
+  } catch (err) {
+    console.error('extractBudgetAndNeed failed, using raw text:', err.message);
+  }
+
+  const c = {
+    ...row.client_data,
+    clientRequest: info.clientRequest || row.client_data.clientRequest || '',
+    budgetMin: info.budgetMin || '',
+    budgetMax: info.budgetMax || '',
+  };
+
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await upsertClientAndNotify(client, reqUser, c);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    await pool.query('DELETE FROM pending_intakes WHERE id = $1', [row.id]);
+
+    const budgetLine = (c.budgetMin || c.budgetMax)
+      ? `\n💰 Бюджет: ${[c.budgetMin, c.budgetMax].filter(Boolean).join('–')} $`
+      : '';
+    await sendTelegramMessage(s.token, s.chatId,
+      `✅ Клієнта остаточно додано в CRM: <b>${c.name}</b> (${c.phone})\n📍 Джерело: ${c.source}${budgetLine}\n🏠 Потреба: ${c.clientRequest || '—'}`);
+  } catch (err) {
+    console.error('finalizePendingIntake failed:', err);
+    await sendTelegramMessage(s.token, s.chatId, '❌ Помилка збереження клієнта: ' + (err.message || 'невідома помилка'));
+  }
+
+  await advancePendingIntakeQueue(userId);
+}
+
+// Run on the same 60s interval as the other Telegram checks (see index.js) —
+// re-sends the manager's currently-active, already-prompted question once an
+// hour until they answer it. Rows still waiting in the queue behind the active
+// one are untouched (prompted_at IS NULL for those), so a manager only ever
+// gets nagged about the one question actually blocking them right now.
+async function checkAndRemindPendingIntakes(pool) {
+  const { rows } = await pool.query(`
+    SELECT pi.*, u.tg_settings AS tg_settings FROM pending_intakes pi
+    JOIN users u ON u.id = pi.user_id AND u.active = true
+    WHERE pi.prompted_at IS NOT NULL
+      AND COALESCE(pi.last_reminded_at, pi.prompted_at) <= now() - interval '1 hour'
+  `);
+  for (const row of rows) {
+    const s = row.tg_settings || {};
+    if (!s.enabled || !s.token || !s.chatId) continue;
+    if (row.step === 'source') await sendSourcePrompt(s, row, true);
+    else await sendDetailsPrompt(s, row, true);
+    await pool.query('UPDATE pending_intakes SET last_reminded_at = now() WHERE id = $1', [row.id]);
+  }
+}
+
 async function processBatch(userId, fileIds) {
   const { rows } = await pool.query(
     'SELECT id, display_name, tg_settings FROM users WHERE id = $1 AND active = true',
@@ -168,10 +346,9 @@ async function processBatch(userId, fileIds) {
       return;
     }
 
-    const created = [];
+    const pendingNew = [];
     const updated = [];
     const scheduled = [];
-    const skipped = [];
 
     for (const buyer of buyers) {
       const client = await pool.connect();
@@ -195,13 +372,13 @@ async function processBatch(userId, fileIds) {
             name: buyer.name || 'Без імені',
             phone: buyer.phone || '',
             phone2: '',
-            source: buyer.source || 'Інстаграм',
+            source: '',
             stage: 1, // "Зателефонувати" — stage 0 is the transfer inbox, not for organic new leads
             hot: false,
             propType: '', rooms: '', budgetMin: '', budgetMax: '', district: '', area: '', floor: '',
             timeline: '', payment: '', purpose: '',
-            clientRequest: buyer.notes || '',
-            notes: '',
+            clientRequest: '',
+            notes: buyer.notes || '',
             date: todayUA(),
             dateISO: isoToday(),
             createdAt: new Date().toISOString(),
@@ -217,14 +394,21 @@ async function processBatch(userId, fileIds) {
           c.tasks.push({ id: uid(), type: buyer.appointmentType, date: buyer.appointmentDate, time: buyer.appointmentTime, done: false });
         }
 
-        const result = await upsertClientAndNotify(client, reqUser, c);
-        await client.query('COMMIT');
-
-        if (result.blocked) {
-          skipped.push(`${c.name} — вже в роботі у ${result.otherManagerName}`);
+        if (isNew) {
+          // Held back from `clients` until the manager answers the mandatory
+          // source + budget/need questions (see advancePendingIntakeQueue) —
+          // an existing client just gets its note/appointment applied now,
+          // same as before, since it already has that info filled in.
+          await client.query(
+            "INSERT INTO pending_intakes (id, user_id, client_data, step) VALUES ($1, $2, $3, 'source')",
+            [c.id, userId, c]
+          );
+          await client.query('COMMIT');
+          pendingNew.push(c.name);
         } else {
-          if (isNew) created.push(c.name);
-          else updated.push(c.name || buyer.name || buyer.phone);
+          await upsertClientAndNotify(client, reqUser, c);
+          await client.query('COMMIT');
+          updated.push(c.name || buyer.name || buyer.phone);
           if (buyer.hasAppointment) {
             scheduled.push(`${c.name} — ${TASK_LABELS[buyer.appointmentType] || buyer.appointmentType} ${buyer.appointmentDate} ${buyer.appointmentTime}`);
           }
@@ -238,11 +422,12 @@ async function processBatch(userId, fileIds) {
     }
 
     const lines = [`🤖 <b>AI-аналіз завершено</b>`, ''];
-    if (created.length) lines.push(`🆕 Нові клієнти (${created.length}): ${created.join(', ')}`);
+    if (pendingNew.length) lines.push(`🆕 Розпізнано нових клієнтів (${pendingNew.length}): ${pendingNew.join(', ')}\n📋 Зараз запитаю джерело/бюджет/потребу по кожному — без цього картка не потрапить в CRM.`);
     if (updated.length) lines.push(`🔁 Доповнено нотатками (${updated.length}): ${updated.join(', ')}`);
     if (scheduled.length) lines.push(`📅 Заплановано: ${scheduled.join('; ')}`);
-    if (skipped.length) lines.push(`🚫 Пропущено (вже в іншого менеджера): ${skipped.join('; ')}`);
     await sendTelegramMessage(s.token, s.chatId, lines.join('\n'));
+
+    if (pendingNew.length) await advancePendingIntakeQueue(userId);
   } catch (err) {
     console.error('AI intake batch failed:', err);
     await sendTelegramMessage(s.token, s.chatId, '❌ Помилка аналізу скріншотів: ' + (err.message || 'невідома помилка'));
@@ -398,14 +583,10 @@ async function processNewClientFromText(userId, phoneNorm, text) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const result = await upsertClientAndNotify(client, reqUser, c);
+      await upsertClientAndNotify(client, reqUser, c);
       await client.query('COMMIT');
 
-      if (result.blocked) {
-        await sendTelegramMessage(s.token, s.chatId, `🚫 Клієнт з номером ${c.phone} вже в роботі у ${result.otherManagerName}.`);
-      } else {
-        await sendTelegramMessage(s.token, s.chatId, `✅ Додано нового клієнта: <b>${c.name}</b> (${c.phone})${scheduledLine}`);
-      }
+      await sendTelegramMessage(s.token, s.chatId, `✅ Додано нового клієнта: <b>${c.name}</b> (${c.phone})${scheduledLine}`);
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -490,14 +671,10 @@ async function processClientTaskByName(userId, text) {
         stageLine = `\n↪️ Етап: ${info.newStageName}`;
       }
 
-      const result = await upsertClientAndNotify(client, reqUser, c);
+      await upsertClientAndNotify(client, reqUser, c);
       await client.query('COMMIT');
 
-      if (result.blocked) {
-        await sendTelegramMessage(s.token, s.chatId, `🚫 Не вдалося оновити — конфлікт з іншим менеджером.`);
-      } else {
-        await sendTelegramMessage(s.token, s.chatId, `✅ Оновлено картку: <b>${c.name}</b>${stageLine}${scheduledLine}`);
-      }
+      await sendTelegramMessage(s.token, s.chatId, `✅ Оновлено картку: <b>${c.name}</b>${stageLine}${scheduledLine}`);
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -585,14 +762,10 @@ async function processTextUpdate(userId, text) {
         stageLine = `\n↪️ Етап: ${info.newStageName}`;
       }
 
-      const result = await upsertClientAndNotify(client, reqUser, c);
+      await upsertClientAndNotify(client, reqUser, c);
       await client.query('COMMIT');
 
-      if (result.blocked) {
-        await sendTelegramMessage(s.token, s.chatId, `🚫 Не вдалося оновити — конфлікт з іншим менеджером.`);
-      } else {
-        await sendTelegramMessage(s.token, s.chatId, `✅ Оновлено картку: <b>${c.name}</b> (${c.phone || phoneNorm})${stageLine}${scheduledLine}`);
-      }
+      await sendTelegramMessage(s.token, s.chatId, `✅ Оновлено картку: <b>${c.name}</b> (${c.phone || phoneNorm})${stageLine}${scheduledLine}`);
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -636,12 +809,30 @@ router.post('/:userId', async (req, res) => {
     if (!update || typeof update.update_id !== 'number') return;
     if (rememberUpdateId(update.update_id)) return;
 
+    if (update.callback_query) {
+      const cq = update.callback_query;
+      if (String(cq.message?.chat?.id) !== String(s.chatId)) return;
+      const m = /^src:(.+):(\d+)$/.exec(cq.data || '');
+      if (m) {
+        handleSourceSelection(userId, m[1], parseInt(m[2], 10), cq.id, s.token)
+          .catch(err => console.error('handleSourceSelection error:', err));
+      } else {
+        answerCallbackQuery(s.token, cq.id).catch(() => {});
+      }
+      return;
+    }
+
     const msg = update.message;
     if (!msg || String(msg.chat?.id) !== String(s.chatId)) return;
 
     if (!Array.isArray(msg.photo) || !msg.photo.length) {
       if (msg.text && !msg.text.startsWith('/')) {
-        processTextUpdate(userId, msg.text).catch(err => console.error('processTextUpdate error:', err));
+        const pendingDetails = await getActiveDetailsIntake(userId);
+        if (pendingDetails) {
+          finalizePendingIntake(userId, pendingDetails, msg.text).catch(err => console.error('finalizePendingIntake error:', err));
+        } else {
+          processTextUpdate(userId, msg.text).catch(err => console.error('processTextUpdate error:', err));
+        }
       }
       return;
     }
@@ -660,4 +851,4 @@ router.post('/:userId', async (req, res) => {
   }
 });
 
-module.exports = router;
+module.exports = { router, checkAndRemindPendingIntakes };

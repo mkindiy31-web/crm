@@ -1,11 +1,11 @@
 const { normalizePhone } = require('./phone');
 const { sendTelegramMessage } = require('./telegram');
 
-// Pings both sides by Telegram when a brand-new client is rejected for
-// belonging to another manager — the in-app toast is easy to miss if the
+// Pings both sides by Telegram the first time a phone turns out to be shared
+// between two managers — the in-app toast/notification is easy to miss if the
 // manager isn't staring at the CRM tab right then. Best-effort: a manager
 // without Telegram configured (or a delivery failure) never blocks the save.
-async function notifyBlockedDuplicate(pgClient, user, c, owner) {
+async function notifyCrossManagerDuplicate(pgClient, user, c, owner) {
   try {
     const { rows } = await pgClient.query(
       'SELECT id, tg_settings FROM users WHERE id = ANY($1::int[])',
@@ -17,31 +17,28 @@ async function notifyBlockedDuplicate(pgClient, user, c, owner) {
     const mine = settingsById.get(user.id);
     if (mine?.enabled && mine.token && mine.chatId) {
       await sendTelegramMessage(mine.token, mine.chatId,
-        `🚫 Не додано: <b>${c.name}</b> (${phone})\nЦей клієнт вже в роботі у ${owner.display_name}.`);
+        `⚠️ Клієнт <b>${c.name}</b> (${phone}) вже є в базі у ${owner.display_name} — обидва тепер ведете його паралельно.`);
     }
 
     const theirs = settingsById.get(owner.manager_id);
     if (theirs?.enabled && theirs.token && theirs.chatId) {
       await sendTelegramMessage(theirs.token, theirs.chatId,
-        `👀 ${user.displayName} намагався(лась) додати вашого клієнта <b>${owner.data.name}</b> (${phone}) — не додано, картка лишилась вашою.`);
+        `⚠️ ${user.displayName} також додав(ла) собі клієнта <b>${owner.data.name}</b> (${phone}) — обидва тепер ведете його паралельно.`);
     }
   } catch (err) {
-    console.error('notifyBlockedDuplicate failed:', err);
+    console.error('notifyCrossManagerDuplicate failed:', err);
   }
 }
 
-// Upserts a single client row for `user`, enforcing that a phone number can only
-// belong to ONE manager at a time. Runs inside the caller's transaction (pgClient
-// is an already-open, already-BEGIN'd client) so callers can commit/rollback
-// batches independently.
+// Upserts a single client row for `user`. Runs inside the caller's transaction
+// (pgClient is an already-open, already-BEGIN'd client) so callers can
+// commit/rollback batches independently.
 //
-// Returns either:
-//   { blocked: true, clientName, otherManagerName }   — brand-new client rejected,
-//     phone already belongs to another manager's active client. Nothing written.
-//   { blocked: false, duplicates: [...] }              — written normally. `duplicates`
-//     is non-empty only for legacy overlaps on an already-existing own client
-//     (phone matched another manager before this row existed), which we still
-//     allow to save (so ongoing edits never get stuck) but keep notifying about.
+// A phone number is allowed to belong to more than one manager at once — each
+// keeps their own independent card for the same person — but the first time a
+// manager's phone turns out to collide with another manager's client, both
+// sides get notified (in-app + Telegram) so nobody works a shared lead blind.
+// Returns { duplicates: [...] }, listing every such collision on this save.
 async function upsertClientAndNotify(pgClient, user, c) {
   const phoneNorm = normalizePhone(c.phone);
   const phone2Norm = normalizePhone(c.phone2);
@@ -50,8 +47,7 @@ async function upsertClientAndNotify(pgClient, user, c) {
     'SELECT data FROM clients WHERE id = $1 AND manager_id = $2',
     [c.id, user.id]
   );
-  const isExistingOwnRow = ownRows.length > 0;
-  const oldData = isExistingOwnRow ? ownRows[0].data : null;
+  const oldData = ownRows.length > 0 ? ownRows[0].data : null;
 
   const phones = [phoneNorm, phone2Norm].filter(Boolean);
   let matches = [];
@@ -64,12 +60,6 @@ async function upsertClientAndNotify(pgClient, user, c) {
       [user.id, phones]
     );
     matches = rows;
-  }
-
-  if (!isExistingOwnRow && matches.length > 0) {
-    const owner = matches[0];
-    await notifyBlockedDuplicate(pgClient, user, c, owner);
-    return { blocked: true, clientName: c.name, otherManagerName: owner.display_name };
   }
 
   await pgClient.query(
@@ -101,11 +91,12 @@ async function upsertClientAndNotify(pgClient, user, c) {
       `INSERT INTO notifications (user_id, message, related_client_id) VALUES ($1, $2, $3)`,
       [m.manager_id, `⚠️ Клієнт "${m.data.name}" (${m.data.phone || m.data.phone2}) також взяв у роботу ${myName}`, m.id]
     );
+    await notifyCrossManagerDuplicate(pgClient, user, c, m);
 
     duplicates.push({ clientName: c.name, otherManagerName: m.display_name });
   }
 
-  return { blocked: false, duplicates };
+  return { duplicates };
 }
 
 // Derives funnel activity events for the real-time stats dashboard by diffing

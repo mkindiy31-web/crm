@@ -48,7 +48,6 @@ router.put('/', async (req, res) => {
   const clients = Array.isArray(req.body?.clients) ? req.body.clients : [];
   const client = await pool.connect();
   const duplicates = [];
-  const blocked = [];
 
   try {
     await client.query('BEGIN');
@@ -56,11 +55,7 @@ router.put('/', async (req, res) => {
     for (const c of clients) {
       if (!c || !c.id) continue;
       const result = await upsertClientAndNotify(client, req.user, c);
-      if (result.blocked) {
-        blocked.push({ clientId: c.id, clientName: result.clientName, otherManagerName: result.otherManagerName });
-      } else {
-        duplicates.push(...result.duplicates);
-      }
+      duplicates.push(...result.duplicates);
     }
 
     await client.query('COMMIT');
@@ -71,7 +66,7 @@ router.put('/', async (req, res) => {
     client.release();
   }
 
-  res.json({ ok: true, duplicates, blocked });
+  res.json({ ok: true, duplicates });
 });
 
 router.post('/:id/archive', async (req, res) => {

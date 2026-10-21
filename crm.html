@@ -1576,14 +1576,6 @@ async function save() {
     (data.duplicates || []).forEach(d => {
       toast(`⚠️ "${d.clientName}" вже в роботі у ${d.otherManagerName}`, 9000);
     });
-    if ((data.blocked || []).length) {
-      const blockedIds = new Set(data.blocked.map(b => b.clientId));
-      clients = clients.filter(c => !blockedIds.has(c.id));
-      data.blocked.forEach(b => {
-        toast(`🚫 "${b.clientName}" вже є в базі менеджера ${b.otherManagerName} — не додано`, 9000);
-      });
-      renderAll();
-    }
   } catch (err) {
     console.error('Не вдалося зберегти дані на сервері:', err);
     toast('❌ Не вдалося зберегти — перевірте з’єднання');
