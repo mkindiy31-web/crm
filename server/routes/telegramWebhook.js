@@ -558,13 +558,13 @@ async function processNewClientFromText(userId, phoneNorm, text) {
     name: info.name || 'Без імені',
     phone: phoneNorm.replace(/^380/, '0'),
     phone2: '',
-    source: 'Telegram',
+    source: '',
     stage: 1, // "Зателефонувати" — organic new lead, same as the AI-screenshot path
     hot: false,
     propType: '', rooms: '', budgetMin: '', budgetMax: '', district: '', area: '', floor: '',
     timeline: '', payment: '', purpose: '',
-    clientRequest: info.notes || '',
-    notes: '',
+    clientRequest: '',
+    notes: info.notes || '',
     date: todayUA(),
     dateISO: isoToday(),
     createdAt: new Date().toISOString(),
@@ -579,20 +579,17 @@ async function processNewClientFromText(userId, phoneNorm, text) {
     scheduledLine = `\n📅 Заплановано: ${TASK_LABELS[info.appointmentType] || info.appointmentType} — ${info.appointmentDate} ${info.appointmentTime}`;
   }
 
+  // Same mandatory gate as the AI-screenshot path (see advancePendingIntakeQueue)
+  // — held in pending_intakes until source + budget/need are answered, instead
+  // of going straight into `clients`.
   try {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      await upsertClientAndNotify(client, reqUser, c);
-      await client.query('COMMIT');
-
-      await sendTelegramMessage(s.token, s.chatId, `✅ Додано нового клієнта: <b>${c.name}</b> (${c.phone})${scheduledLine}`);
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
+    await pool.query(
+      "INSERT INTO pending_intakes (id, user_id, client_data, step) VALUES ($1, $2, $3, 'source')",
+      [c.id, userId, c]
+    );
+    await sendTelegramMessage(s.token, s.chatId,
+      `🆕 Розпізнано нового клієнта: <b>${c.name}</b> (${c.phone})${scheduledLine}\n📋 Зараз запитаю джерело/бюджет/потребу — без цього картка не потрапить в CRM.`);
+    await advancePendingIntakeQueue(userId);
   } catch (err) {
     console.error('processNewClientFromText failed:', err);
     await sendTelegramMessage(s.token, s.chatId, '❌ Помилка обробки повідомлення: ' + (err.message || 'невідома помилка'));
