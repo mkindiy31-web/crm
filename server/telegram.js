@@ -155,6 +155,7 @@ async function checkAndNotifyAll(pool) {
           `📌 Завдання: ${label}\n` +
           `🕐 Час: <b>${t.time}</b> (${t.date})\n` +
           (c.phone ? `📞 Телефон: ${c.phone}\n` : '') +
+          (t.note ? `📝 ${t.note}\n` : '') +
           `\n⏰ До початку: ~${Math.round(diffMin)} хв`;
 
         const ok = await sendTelegramMessage(s.token, s.chatId, msg);

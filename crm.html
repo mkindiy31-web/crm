@@ -1124,6 +1124,58 @@
           <span id="hot-check" style="margin-left:auto;font-size:18px;">☐</span>
         </div>
       </div>
+
+      <!-- Mandatory first task — every new client must leave the modal with a
+           next step scheduled, so nobody gets added and then forgotten. -->
+      <div class="field" id="f-task-section">
+        <label id="f-task-label">Перше завдання (обов'язково) *</label>
+        <div class="add-task-form" style="margin-bottom:0;">
+          <select id="f-task-type">
+            <option value="call">📞 Дзвінок</option>
+            <option value="consultation">💬 Консультація</option>
+            <option value="selection">🔎 Підбір</option>
+            <option value="inspection">🔍 Огляд</option>
+            <option value="registration">📝 Оформлення</option>
+          </select>
+          <div style="display:flex;gap:7px;align-items:stretch;">
+            <div class="dp-wrap" id="dp-modal" onclick="dpToggle('dp-modal')">
+              <div class="dp-display"><span class="dp-icon">📅</span><span class="dp-val" id="dp-modal-label">Оберіть дату</span></div>
+              <input type="hidden" id="f-task-date">
+              <div class="dp-calendar" id="dp-modal-cal"></div>
+            </div>
+            <div class="time-picker-wrap" id="tp-modal">
+              <div class="time-picker-display" onclick="tpToggle('tp-modal')">
+                <span class="tp-icon">🕐</span>
+                <span id="tp-modal-label">12:00</span>
+              </div>
+              <input type="hidden" id="f-task-time" value="12:00">
+              <div class="time-picker-dropdown" id="tp-modal-drop">
+                <div class="tp-presets">
+                  <button class="tp-preset" onclick="tpSet('tp-modal','09:00')">09:00</button>
+                  <button class="tp-preset" onclick="tpSet('tp-modal','10:00')">10:00</button>
+                  <button class="tp-preset" onclick="tpSet('tp-modal','11:00')">11:00</button>
+                  <button class="tp-preset" onclick="tpSet('tp-modal','12:00')">12:00</button>
+                  <button class="tp-preset" onclick="tpSet('tp-modal','13:00')">13:00</button>
+                  <button class="tp-preset" onclick="tpSet('tp-modal','14:00')">14:00</button>
+                  <button class="tp-preset" onclick="tpSet('tp-modal','15:00')">15:00</button>
+                  <button class="tp-preset" onclick="tpSet('tp-modal','16:00')">16:00</button>
+                  <button class="tp-preset" onclick="tpSet('tp-modal','17:00')">17:00</button>
+                  <button class="tp-preset" onclick="tpSet('tp-modal','18:00')">18:00</button>
+                  <button class="tp-preset" onclick="tpSet('tp-modal','19:00')">19:00</button>
+                  <button class="tp-preset" onclick="tpSet('tp-modal','20:00')">20:00</button>
+                </div>
+                <div class="tp-manual">
+                  <label>СВІЙ ЧАС:</label>
+                  <input class="tp-hh" id="tp-modal-hh" type="number" min="0" max="23" placeholder="гг" oninput="tpManual('tp-modal')">
+                  <span class="tp-sep">:</span>
+                  <input class="tp-mm" id="tp-modal-mm" type="number" min="0" max="59" placeholder="хх" oninput="tpManual('tp-modal')">
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <textarea id="f-task-note" placeholder="Коментар (напр.: подзвонити ввечері, уточнити як йому варіанти які надіслав)" style="margin-top:8px;min-height:50px;resize:vertical;width:100%;"></textarea>
+      </div>
     </div>
 
     <!-- TAB 2: NEED -->
@@ -2098,6 +2150,9 @@ function openModal(defaultStage, id) {
     setF('f-notes', c.notes);
     hotValue = !!c.hot;
     populateStageSelect(c.stage);
+    // Task is only required when creating a brand-new client — editing an
+    // existing one manages tasks via the drawer instead.
+    document.getElementById('f-task-section').style.display = 'none';
   } else {
     document.getElementById('modal-heading').textContent = 'Новий клієнт';
     document.getElementById('modal-icon').textContent = '👤';
@@ -2108,6 +2163,15 @@ function openModal(defaultStage, id) {
     setF('f-prop-type', 'Квартира'); // default
     document.querySelectorAll('#f-rooms-picker .room-btn').forEach(b => b.classList.remove('active'));
     populateStageSelect(defaultStage !== undefined ? defaultStage : 1); // stage 0 is the transfer inbox, manual adds start at "Зателефонувати"
+
+    document.getElementById('f-task-section').style.display = '';
+    document.getElementById('f-task-label').style.color = '';
+    setF('f-task-type', 'call');
+    setF('f-task-date', '');
+    document.getElementById('dp-modal-label').textContent = 'Оберіть дату';
+    setF('f-task-time', '12:00');
+    document.getElementById('tp-modal-label').textContent = '12:00';
+    setF('f-task-note', '');
   }
 
   toggleReferralField();
@@ -2169,6 +2233,29 @@ function saveClient() {
   }
   document.getElementById('f-name').style.borderColor = '';
 
+  // A brand-new client must leave this modal with a first task scheduled —
+  // editing an existing client manages tasks via the drawer instead, so this
+  // only applies when creating (editingId is null).
+  let newTask = null;
+  if (!editingId) {
+    const taskDate = document.getElementById('f-task-date').value;
+    if (!taskDate) {
+      switchModalTab('contact', document.querySelector('.modal-tab-btn'));
+      document.getElementById('f-task-label').style.color = '#e05252';
+      toast('❌ Вкажіть дату першого завдання (наприклад, подзвонити)');
+      return;
+    }
+    document.getElementById('f-task-label').style.color = '';
+    newTask = {
+      id: uid(),
+      type: document.getElementById('f-task-type').value,
+      date: taskDate,
+      time: document.getElementById('f-task-time').value || '',
+      note: document.getElementById('f-task-note').value.trim(),
+      done: false,
+    };
+  }
+
   const fields = {
     name,
     phone:         document.getElementById('f-phone').value.trim(),
@@ -2198,8 +2285,9 @@ function saveClient() {
       toast('✅ Клієнта оновлено');
     }
   } else {
-    const nc = { id: uid(), ...fields, date: today(), dateISO: isoToday(), createdAt: new Date().toISOString(), responsibleManagerName: currentUser?.displayName || '', tasks: [], history: [] };
+    const nc = { id: uid(), ...fields, date: today(), dateISO: isoToday(), createdAt: new Date().toISOString(), responsibleManagerName: currentUser?.displayName || '', tasks: [newTask], history: [] };
     addHistory(nc, 'created', `Клієнта додано у воронку — ${STAGES[nc.stage]?.icon} ${STAGES[nc.stage]?.name}`);
+    addHistory(nc, 'task_added', `Додано завдання: ${TASK_TYPES[newTask.type]?.label} — ${formatDateUA(newTask.date)}${newTask.time ? ' о ' + newTask.time : ''}`);
     clients.unshift(nc);
     toast('✅ Клієнта додано');
   }
@@ -4503,6 +4591,7 @@ function renderActivityTab() {
         <div style="flex:1;min-width:0;">
           <div style="font-size:12px;font-weight:600;">${tt.icon} ${tt.label}</div>
           <div style="font-size:11px;${dateStyle}">${dateLbl}${t.time ? ' · 🕐 ' + t.time : ''}</div>
+          ${t.note ? `<div style="font-size:10px;color:var(--text-m);margin-top:2px;">📝 ${escHtml(t.note)}</div>` : ''}
         </div>
         <button class="task-del-btn" onclick="deleteTaskDrawer('${t.id}')">🗑️</button>
       </div>`;
@@ -4725,7 +4814,7 @@ function renderDrawerTasks() {
     else if (!t.done && t.date === td) { dateCls += ' today-badge'; dateLbl = '🔔 Сьогодні'; }
     return `<div class="task-item ${t.done?'done':''}">
       <div class="task-check ${t.done?'checked':''}" onclick="toggleTaskDrawer('${t.id}')">${t.done?'✓':''}</div>
-      <div class="task-info"><div class="task-label">${tt.icon} ${tt.label}</div><div class="${dateCls}">${dateLbl}${t.time ? ' · 🕐 ' + t.time : ''}</div>${t.result ? `<div style="font-size:10px;color:var(--text-s);margin-top:3px;font-style:italic;">💬 ${escHtml(t.result)}</div>` : ''}</div>
+      <div class="task-info"><div class="task-label">${tt.icon} ${tt.label}</div><div class="${dateCls}">${dateLbl}${t.time ? ' · 🕐 ' + t.time : ''}</div>${t.note ? `<div style="font-size:10px;color:var(--text-m);margin-top:3px;">📝 ${escHtml(t.note)}</div>` : ''}${t.result ? `<div style="font-size:10px;color:var(--text-s);margin-top:3px;font-style:italic;">💬 ${escHtml(t.result)}</div>` : ''}</div>
       <button class="task-del-btn" onclick="deleteTaskDrawer('${t.id}')">🗑️</button>
     </div>`;
   }).join('');
@@ -4752,7 +4841,7 @@ function dpToggle(id) {
 function dpRender(id) {
   const st = _dpState[id];
   const cal = document.getElementById(id + '-cal');
-  const hiddenInput = document.getElementById(id === 'dp-dr' ? 'dr-task-date' : 'tm-date');
+  const hiddenInput = document.getElementById(id)?.querySelector('input[type="hidden"]');
   const selected = hiddenInput ? hiddenInput.value : '';
   const today = isoToday();
   const { year, month } = st;
@@ -4806,8 +4895,7 @@ function dpShift(id, dir) {
 }
 
 function dpSelect(id, iso) {
-  const hiddenId = id === 'dp-dr' ? 'dr-task-date' : 'tm-date';
-  const hidden = document.getElementById(hiddenId);
+  const hidden = document.getElementById(id)?.querySelector('input[type="hidden"]');
   if (hidden) hidden.value = iso;
   const label = document.getElementById(id + '-label');
   if (label) {
@@ -4835,8 +4923,6 @@ function tpToggle(id) {
 }
 function tpSet(id, val) {
   document.getElementById(id + '-drop').classList.remove('open');
-  document.getElementById(id.replace('tp-','') === 'dr' ? 'dr-task-time' : 'tm-time').value = val;
-  // figure out actual hidden input id
   const wrap = document.getElementById(id);
   if (wrap) {
     const hidden = wrap.querySelector('input[type="hidden"]');
