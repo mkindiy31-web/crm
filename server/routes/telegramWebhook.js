@@ -4,8 +4,8 @@ const { pool } = require('../db');
 const { normalizePhone } = require('../phone');
 const { upsertClientAndNotify } = require('../clientOps');
 const { sendTelegramMessage, sendTelegramKeyboard, answerCallbackQuery, getFilePath, downloadFileAsBase64, TASK_LABELS, addDaysISO, kyivTodayISO } = require('../telegram');
-const { extractBuyers, extractTextUpdate, extractPersonalTodo, extractClientTaskByName, extractNewClientFromText, extractBudgetAndNeed } = require('../aiIntake');
-const { STAGES } = require('../stages');
+const { extractBuyers, extractTextUpdate, extractPersonalTodo, extractClientTaskByName, extractNewClientFromText, extractBudgetAndNeed, extractTaskFromText } = require('../aiIntake');
+const { STAGES, DEAL_STAGE_ID } = require('../stages');
 
 const router = express.Router();
 
@@ -143,7 +143,7 @@ function extractPhoneFromText(text) {
   return { valid: null, invalidCandidate };
 }
 
-// Same 9 lead sources as the "Звідки дізнався" dropdown in the CRM itself
+// Same lead sources as the "Звідки дізнався" dropdown in the CRM itself
 // (crm.html) — kept in sync by hand since this list rarely changes.
 const SOURCE_OPTIONS = [
   { key: 'OLX', label: '🏠 OLX' },
@@ -151,18 +151,22 @@ const SOURCE_OPTIONS = [
   { key: 'rieltor.ua', label: '🏠 rieltor.ua' },
   { key: 'Інстаграм', label: '📷 Інстаграм' },
   { key: 'Фейсбук', label: '📘 Фейсбук' },
+  { key: 'Тредс', label: '🧵 Тредс' },
   { key: 'Тікток', label: '🎵 Тікток' },
   { key: 'Рекомендації', label: '🤝 Рекомендації' },
   { key: 'Банер', label: '🪧 Банер' },
   { key: 'Інше', label: '💬 Інше' },
 ];
 
-function sourceKeyboardRows(pendingId) {
+// `cbPrefix` distinguishes which flow a tap should resume — 'src' for a
+// brand-new client still in pending_intakes, 'fixsrc' for an existing
+// client in pending_source_fixes that's just missing its source.
+function sourceKeyboardRows(cbPrefix, id) {
   const rows = [];
   for (let i = 0; i < SOURCE_OPTIONS.length; i += 2) {
     const row = [SOURCE_OPTIONS[i], SOURCE_OPTIONS[i + 1]]
       .filter(Boolean)
-      .map((opt, j) => ({ text: opt.label, callback_data: `src:${pendingId}:${i + j}` }));
+      .map((opt, j) => ({ text: opt.label, callback_data: `${cbPrefix}:${id}:${i + j}` }));
     rows.push(row);
   }
   return rows;
@@ -174,7 +178,17 @@ async function sendSourcePrompt(s, row, isReminder) {
     ? '⏰ Нагадування — ще не заповнено.\n\n'
     : '🆕 Новий клієнт розпізнаний AI — ';
   const text = `${prefix}<b>${c.name}</b>${c.phone ? ' (' + c.phone + ')' : ''}\n\n📍 Звідки прийшов клієнт?`;
-  await sendTelegramKeyboard(s.token, s.chatId, text, sourceKeyboardRows(row.id));
+  await sendTelegramKeyboard(s.token, s.chatId, text, sourceKeyboardRows('src', row.id));
+}
+
+async function sendSourceFixPrompt(s, row, isReminder) {
+  const prefix = isReminder ? '⏰ Нагадування — ще не заповнено.\n\n' : '📋 ';
+  const text = `${prefix}У клієнта <b>${escapeHtmlTg(row.client_name)}</b> не вказано джерело.\n\n📍 Звідки прийшов клієнт?`;
+  await sendTelegramKeyboard(s.token, s.chatId, text, sourceKeyboardRows('fixsrc', row.id));
+}
+
+function escapeHtmlTg(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 async function sendDetailsPrompt(s, row, isReminder) {
@@ -182,6 +196,13 @@ async function sendDetailsPrompt(s, row, isReminder) {
   const prefix = isReminder ? '⏰ Нагадування — ' : `✅ Джерело: ${c.source}\n`;
   await sendTelegramMessage(s.token, s.chatId,
     `${prefix}Напишіть одним повідомленням: який бюджет і що шукає клієнт <b>${c.name}</b>?\n\n(наприклад: "шукає 2-кімнатну в центрі, бюджет 60-70 тисяч")`);
+}
+
+async function sendTaskPrompt(s, row, isReminder) {
+  const c = row.client_data;
+  const prefix = isReminder ? '⏰ Нагадування — ' : '✅ Прийнято\n';
+  await sendTelegramMessage(s.token, s.chatId,
+    `${prefix}Останній крок: яке перше завдання поставити для <b>${c.name}</b>?\n\n(наприклад: "подзвонити завтра о 15:00" або "зателефонувати ввечері")`);
 }
 
 // Sends the next outstanding question for this manager's oldest unfinished
@@ -205,14 +226,20 @@ async function advancePendingIntakeQueue(userId) {
   if (!row || row.prompted_at) return;
 
   if (row.step === 'source') await sendSourcePrompt(s, row, false);
-  else await sendDetailsPrompt(s, row, false);
+  else if (row.step === 'details') await sendDetailsPrompt(s, row, false);
+  else await sendTaskPrompt(s, row, false);
 
   await pool.query('UPDATE pending_intakes SET prompted_at = now() WHERE id = $1', [row.id]);
 }
 
-async function getActiveDetailsIntake(userId) {
+// Both 'details' (budget/need) and 'task' (first task) steps expect a plain
+// text reply as the very next message — this finds whichever one is
+// currently active so the webhook router knows to treat the manager's next
+// message as an answer instead of routing it through the normal command
+// parsing (processTextUpdate etc).
+async function getActiveTextStepIntake(userId) {
   const { rows } = await pool.query(
-    "SELECT * FROM pending_intakes WHERE user_id = $1 AND step = 'details' ORDER BY created_at ASC LIMIT 1",
+    "SELECT * FROM pending_intakes WHERE user_id = $1 AND step IN ('details', 'task') ORDER BY created_at ASC LIMIT 1",
     [userId]
   );
   return rows[0] || null;
@@ -243,11 +270,138 @@ async function handleSourceSelection(userId, pendingId, idx, callbackQueryId, to
   await advancePendingIntakeQueue(userId);
 }
 
+// Same queue-of-one-at-a-time idea as advancePendingIntakeQueue, but for
+// EXISTING clients queued via the admin's "Нагадати заповнити" action
+// (pending_source_fixes) — only one question each, so there's no 'step'.
+async function advanceSourceFixQueue(userId) {
+  const { rows: userRows } = await pool.query(
+    'SELECT tg_settings FROM users WHERE id = $1 AND active = true',
+    [userId]
+  );
+  const s = userRows[0]?.tg_settings || {};
+  if (!s.enabled || !s.token || !s.chatId) return;
+
+  // Skip (and clear out) any queued row whose client no longer needs asking —
+  // deleted/archived, already got a source some other way, or the deal
+  // closed while it sat in the queue (don't bother a manager about a client
+  // that already reached "Угода").
+  for (;;) {
+    const { rows } = await pool.query(
+      'SELECT * FROM pending_source_fixes WHERE user_id = $1 ORDER BY created_at ASC LIMIT 1',
+      [userId]
+    );
+    const row = rows[0];
+    if (!row) return;
+    if (row.prompted_at) return; // already waiting on an answer
+
+    const { rows: clientRows } = await pool.query(
+      'SELECT data FROM clients WHERE id = $1 AND manager_id = $2 AND archived_at IS NULL',
+      [row.client_id, userId]
+    );
+    const clientData = clientRows[0]?.data;
+    if (!clientData || clientData.source || clientData.stage === DEAL_STAGE_ID) {
+      await pool.query('DELETE FROM pending_source_fixes WHERE id = $1', [row.id]);
+      continue;
+    }
+
+    await sendSourceFixPrompt(s, row, false);
+    await pool.query('UPDATE pending_source_fixes SET prompted_at = now() WHERE id = $1', [row.id]);
+    return;
+  }
+}
+
+// Handles a tap on one of the source buttons sent by sendSourceFixPrompt —
+// writes the chosen source directly onto the already-existing client (unlike
+// handleSourceSelection, which only touches the pending_intakes staging row),
+// since this client is already a real row in `clients`.
+async function handleSourceFixSelection(userId, fixId, idx, callbackQueryId, token) {
+  const opt = SOURCE_OPTIONS[idx];
+  if (!opt) { await answerCallbackQuery(token, callbackQueryId, 'Помилка вибору'); return; }
+
+  const { rows } = await pool.query(
+    'SELECT * FROM pending_source_fixes WHERE id = $1 AND user_id = $2',
+    [fixId, userId]
+  );
+  const fixRow = rows[0];
+  if (!fixRow) { await answerCallbackQuery(token, callbackQueryId, 'Вже оброблено', true); return; }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: clientRows } = await client.query(
+      'SELECT data FROM clients WHERE id = $1 AND manager_id = $2',
+      [fixRow.client_id, userId]
+    );
+    if (clientRows.length) {
+      const c = { ...clientRows[0].data, source: opt.key };
+      if (!c.history) c.history = [];
+      c.history.unshift({ id: uid(), type: 'info_updated', text: `Джерело вказано через Telegram: ${opt.key}`, result: '', date: todayUA(), time: nowTimeUA() });
+      await client.query('UPDATE clients SET data = $1, updated_at = now() WHERE id = $2 AND manager_id = $3', [c, fixRow.client_id, userId]);
+    }
+    await client.query('DELETE FROM pending_source_fixes WHERE id = $1', [fixId]);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  await answerCallbackQuery(token, callbackQueryId, `Обрано: ${opt.key}`);
+  await advanceSourceFixQueue(userId);
+}
+
+// Same nag idea as checkAndRemindPendingIntakes, for the source-fix queue —
+// re-sends the manager's currently-active, already-prompted client once a
+// day until they tap a source. Daily rather than hourly: this is a data-
+// quality cleanup, not a blocking "client isn't in the CRM yet" situation,
+// so it shouldn't nag as aggressively.
+async function checkAndRemindSourceFixes(pool) {
+  const { rows } = await pool.query(`
+    SELECT psf.*, u.tg_settings AS tg_settings FROM pending_source_fixes psf
+    JOIN users u ON u.id = psf.user_id AND u.active = true
+    WHERE psf.prompted_at IS NOT NULL
+      AND COALESCE(psf.last_reminded_at, psf.prompted_at) <= now() - interval '1 day'
+  `);
+  for (const row of rows) {
+    const s = row.tg_settings || {};
+    if (!s.enabled || !s.token || !s.chatId) continue;
+    await sendSourceFixPrompt(s, row, true);
+    await pool.query('UPDATE pending_source_fixes SET last_reminded_at = now() WHERE id = $1', [row.id]);
+  }
+}
+
 // Handles the manager's free-text answer to "який бюджет і що шукає клієнт?"
-// — the last mandatory step. Parses budget/need via AI (best-effort), then
-// finally writes the client into the real `clients` table and clears the
-// pending row. Any text at all completes this step — a parsing miss just
-// means the budget comes back empty, never blocks the manager a second time.
+// Parses budget/need via AI (best-effort), stores it on the staged client,
+// then moves on to the final mandatory step (first task) instead of saving
+// yet. Any text at all completes this step — a parsing miss just means the
+// budget comes back empty, never blocks the manager a second time.
+async function handleDetailsAnswer(userId, row, text) {
+  let info = { clientRequest: text.trim(), budgetMin: 0, budgetMax: 0 };
+  try {
+    info = await extractBudgetAndNeed(text);
+  } catch (err) {
+    console.error('extractBudgetAndNeed failed, using raw text:', err.message);
+  }
+
+  const updatedData = {
+    ...row.client_data,
+    clientRequest: info.clientRequest || row.client_data.clientRequest || '',
+    budgetMin: info.budgetMin || '',
+    budgetMax: info.budgetMax || '',
+  };
+  await pool.query(
+    "UPDATE pending_intakes SET client_data = $1, step = 'task', prompted_at = NULL WHERE id = $2",
+    [updatedData, row.id]
+  );
+  await advancePendingIntakeQueue(userId);
+}
+
+// Handles the manager's free-text answer to "яке перше завдання поставити?"
+// — the last mandatory step. Parses type/date/time via AI (extractTaskFromText
+// always returns a usable date, defaulting to tomorrow, so this never blocks
+// on a vague answer), attaches the task, and only now actually writes the
+// client into `clients`.
 async function finalizePendingIntake(userId, row, text) {
   const { rows: userRows } = await pool.query(
     'SELECT id, display_name, tg_settings FROM users WHERE id = $1 AND active = true',
@@ -258,19 +412,9 @@ async function finalizePendingIntake(userId, row, text) {
   const s = user.tg_settings || {};
   const reqUser = { id: user.id, displayName: user.display_name };
 
-  let info = { clientRequest: text.trim(), budgetMin: 0, budgetMax: 0 };
-  try {
-    info = await extractBudgetAndNeed(text);
-  } catch (err) {
-    console.error('extractBudgetAndNeed failed, using raw text:', err.message);
-  }
-
-  const c = {
-    ...row.client_data,
-    clientRequest: info.clientRequest || row.client_data.clientRequest || '',
-    budgetMin: info.budgetMin || '',
-    budgetMax: info.budgetMax || '',
-  };
+  const taskInfo = await extractTaskFromText(text);
+  const task = { id: uid(), type: taskInfo.type, date: taskInfo.date, time: taskInfo.time, note: taskInfo.note, done: false };
+  const c = { ...row.client_data, tasks: [task] };
 
   try {
     const client = await pool.connect();
@@ -290,8 +434,9 @@ async function finalizePendingIntake(userId, row, text) {
     const budgetLine = (c.budgetMin || c.budgetMax)
       ? `\n💰 Бюджет: ${[c.budgetMin, c.budgetMax].filter(Boolean).join('–')} $`
       : '';
+    const taskLabel = TASK_LABELS[task.type] || task.type;
     await sendTelegramMessage(s.token, s.chatId,
-      `✅ Клієнта остаточно додано в CRM: <b>${c.name}</b> (${c.phone})\n📍 Джерело: ${c.source}${budgetLine}\n🏠 Потреба: ${c.clientRequest || '—'}`);
+      `✅ Клієнта остаточно додано в CRM: <b>${c.name}</b> (${c.phone})\n📍 Джерело: ${c.source}${budgetLine}\n🏠 Потреба: ${c.clientRequest || '—'}\n📌 Завдання: ${taskLabel} — ${task.date}${task.time ? ' ' + task.time : ''}`);
   } catch (err) {
     console.error('finalizePendingIntake failed:', err);
     await sendTelegramMessage(s.token, s.chatId, '❌ Помилка збереження клієнта: ' + (err.message || 'невідома помилка'));
@@ -316,7 +461,8 @@ async function checkAndRemindPendingIntakes(pool) {
     const s = row.tg_settings || {};
     if (!s.enabled || !s.token || !s.chatId) continue;
     if (row.step === 'source') await sendSourcePrompt(s, row, true);
-    else await sendDetailsPrompt(s, row, true);
+    else if (row.step === 'details') await sendDetailsPrompt(s, row, true);
+    else await sendTaskPrompt(s, row, true);
     await pool.query('UPDATE pending_intakes SET last_reminded_at = now() WHERE id = $1', [row.id]);
   }
 }
@@ -422,7 +568,7 @@ async function processBatch(userId, fileIds) {
     }
 
     const lines = [`🤖 <b>AI-аналіз завершено</b>`, ''];
-    if (pendingNew.length) lines.push(`🆕 Розпізнано нових клієнтів (${pendingNew.length}): ${pendingNew.join(', ')}\n📋 Зараз запитаю джерело/бюджет/потребу по кожному — без цього картка не потрапить в CRM.`);
+    if (pendingNew.length) lines.push(`🆕 Розпізнано нових клієнтів (${pendingNew.length}): ${pendingNew.join(', ')}\n📋 Зараз запитаю джерело/бюджет/потребу/завдання по кожному — без цього картка не потрапить в CRM.`);
     if (updated.length) lines.push(`🔁 Доповнено нотатками (${updated.length}): ${updated.join(', ')}`);
     if (scheduled.length) lines.push(`📅 Заплановано: ${scheduled.join('; ')}`);
     await sendTelegramMessage(s.token, s.chatId, lines.join('\n'));
@@ -588,7 +734,7 @@ async function processNewClientFromText(userId, phoneNorm, text) {
       [c.id, userId, c]
     );
     await sendTelegramMessage(s.token, s.chatId,
-      `🆕 Розпізнано нового клієнта: <b>${c.name}</b> (${c.phone})${scheduledLine}\n📋 Зараз запитаю джерело/бюджет/потребу — без цього картка не потрапить в CRM.`);
+      `🆕 Розпізнано нового клієнта: <b>${c.name}</b> (${c.phone})${scheduledLine}\n📋 Зараз запитаю джерело/бюджет/потребу/завдання — без цього картка не потрапить в CRM.`);
     await advancePendingIntakeQueue(userId);
   } catch (err) {
     console.error('processNewClientFromText failed:', err);
@@ -809,10 +955,15 @@ router.post('/:userId', async (req, res) => {
     if (update.callback_query) {
       const cq = update.callback_query;
       if (String(cq.message?.chat?.id) !== String(s.chatId)) return;
-      const m = /^src:(.+):(\d+)$/.exec(cq.data || '');
-      if (m) {
-        handleSourceSelection(userId, m[1], parseInt(m[2], 10), cq.id, s.token)
+      const data = cq.data || '';
+      const mNew = /^src:(.+):(\d+)$/.exec(data);
+      const mFix = /^fixsrc:(.+):(\d+)$/.exec(data);
+      if (mNew) {
+        handleSourceSelection(userId, mNew[1], parseInt(mNew[2], 10), cq.id, s.token)
           .catch(err => console.error('handleSourceSelection error:', err));
+      } else if (mFix) {
+        handleSourceFixSelection(userId, parseInt(mFix[1], 10), parseInt(mFix[2], 10), cq.id, s.token)
+          .catch(err => console.error('handleSourceFixSelection error:', err));
       } else {
         answerCallbackQuery(s.token, cq.id).catch(() => {});
       }
@@ -824,9 +975,11 @@ router.post('/:userId', async (req, res) => {
 
     if (!Array.isArray(msg.photo) || !msg.photo.length) {
       if (msg.text && !msg.text.startsWith('/')) {
-        const pendingDetails = await getActiveDetailsIntake(userId);
-        if (pendingDetails) {
-          finalizePendingIntake(userId, pendingDetails, msg.text).catch(err => console.error('finalizePendingIntake error:', err));
+        const pendingStep = await getActiveTextStepIntake(userId);
+        if (pendingStep?.step === 'details') {
+          handleDetailsAnswer(userId, pendingStep, msg.text).catch(err => console.error('handleDetailsAnswer error:', err));
+        } else if (pendingStep?.step === 'task') {
+          finalizePendingIntake(userId, pendingStep, msg.text).catch(err => console.error('finalizePendingIntake error:', err));
         } else {
           processTextUpdate(userId, msg.text).catch(err => console.error('processTextUpdate error:', err));
         }
@@ -848,4 +1001,4 @@ router.post('/:userId', async (req, res) => {
   }
 });
 
-module.exports = { router, checkAndRemindPendingIntakes };
+module.exports = { router, checkAndRemindPendingIntakes, checkAndRemindSourceFixes, advanceSourceFixQueue };

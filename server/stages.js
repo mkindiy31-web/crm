@@ -36,4 +36,9 @@ function findStageIdByName(name) {
   return byBareName ? byBareName.id : null;
 }
 
-module.exports = { STAGES, findStageIdByName };
+// The closed/won stage — found by name rather than a hardcoded id, same
+// reasoning as DEAL_STAGE_ID in crm.html (stage ids shift whenever a stage
+// is inserted/removed/reordered).
+const DEAL_STAGE_ID = STAGES.find(s => s.name.replace(/^\d+\.\s*/, '') === 'Угода')?.id ?? null;
+
+module.exports = { STAGES, findStageIdByName, DEAL_STAGE_ID };

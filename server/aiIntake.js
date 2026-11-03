@@ -99,7 +99,7 @@ async function extractBuyers(images) {
   {
     "name": "Ім'я та прізвище або ім'я профілю",
     "phone": "номер телефону якщо є в переписці, інакше порожньо",
-    "source": "OLX або DOM.RIA або rieltor.ua або Інстаграм або Фейсбук або Тікток або Рекомендації або Банер або Інше",
+    "source": "OLX або DOM.RIA або rieltor.ua або Інстаграм або Фейсбук або Тредс або Тікток або Рекомендації або Банер або Інше",
     "notes": "короткий зміст переписки — що хоче клієнт, бюджет, район, деталі",
     "hasAppointment": true або false — чи домовились про конкретний дзвінок/зустріч/огляд,
     "appointmentType": "call" (дзвінок) або "consultation" (консультація) або "selection" (підбір варіантів) або "inspection" (огляд) або "registration" (оформлення) — тільки якщо hasAppointment true,
@@ -488,4 +488,75 @@ async function extractBudgetAndNeed(text) {
   };
 }
 
-module.exports = { extractBuyers, extractTextUpdate, extractPersonalTodo, extractClientTaskByName, extractNewClientFromText, extractBudgetAndNeed, TASK_TYPES };
+function addDays(isoDate, days) {
+  const d = new Date(isoDate + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// Answers the mandatory Telegram follow-up question "Яке перше завдання
+// поставити для цього клієнта?" asked after source + budget/need — pulls out
+// a task type, date and time. Always returns a usable date (defaults to
+// tomorrow if none is mentioned) and type (defaults to 'call'), since the
+// whole point of this step is that the client never ends up without a next
+// action, even when the manager's answer is vague or the API is down.
+async function extractTaskFromText(text) {
+  const { isoDate, weekday } = kyivToday();
+  const tomorrow = addDays(isoDate, 1);
+  const fallback = { type: 'call', date: tomorrow, time: '', note: clip(text) };
+
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return fallback;
+
+  const prompt = `Менеджер з нерухомості щойно відповів на обов'язкове запитання "Яке перше завдання поставити для цього клієнта?" Сьогодні ${isoDate} (${weekday}) за київським часом.
+
+Повідомлення менеджера: "${clip(text)}"
+
+Визнач:
+1. Тип завдання: call (дзвінок), consultation (консультація), selection (підбір варіантів), inspection (огляд/зустріч), registration (оформлення). Якщо не зрозуміло — call.
+2. Дату виконання — переведи відносну дату (сьогодні/завтра/день тижня) у конкретну YYYY-MM-DD відносно сьогодні. Якщо дата взагалі не згадана — став завтра (${tomorrow}).
+3. Час, якщо згаданий (HH:MM, 24-годинний формат) — якщо ні, залиш порожнім.
+4. Короткий підсумок завдання українською (1 речення).
+
+Поверни ТІЛЬКИ JSON:
+{
+  "type": "call" | "consultation" | "selection" | "inspection" | "registration",
+  "date": "YYYY-MM-DD",
+  "time": "HH:MM або порожній рядок",
+  "note": "короткий підсумок українською"
+}`;
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: process.env.AI_INTAKE_MODEL || 'claude-haiku-4-5',
+        max_tokens: 512,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+      }),
+    });
+    if (!response.ok) return fallback;
+
+    const data = await response.json();
+    const raw = data.content[0].text.trim();
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return fallback;
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    const type = TASK_TYPES.includes(parsed.type) ? parsed.type : 'call';
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(parsed.date) ? parsed.date : tomorrow;
+    const time = /^\d{2}:\d{2}$/.test(parsed.time) ? parsed.time : '';
+    const note = clip(parsed.note) || clip(text);
+
+    return { type, date, time, note };
+  } catch {
+    return fallback;
+  }
+}
+
+module.exports = { extractBuyers, extractTextUpdate, extractPersonalTodo, extractClientTaskByName, extractNewClientFromText, extractBudgetAndNeed, extractTaskFromText, TASK_TYPES };

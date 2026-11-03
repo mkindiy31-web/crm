@@ -1101,6 +1101,7 @@
             <option value="rieltor.ua">🏠 rieltor.ua</option>
             <option value="Інстаграм">📷 Інстаграм</option>
             <option value="Фейсбук">📘 Фейсбук</option>
+            <option value="Тредс">🧵 Тредс</option>
             <option value="Тікток">🎵 Тікток</option>
             <option value="Рекомендації">🤝 Рекомендації</option>
             <option value="Банер">🪧 Банер</option>
@@ -3298,28 +3299,37 @@ async function renderManagersView() {
   const managers = res.ok ? await res.json() : [];
 
   boardWrap.innerHTML = `
-    <div style="padding:24px 28px;max-width:640px;">
+    <div style="padding:24px 28px;max-width:860px;">
       <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px;">
         <input id="mgr-username" placeholder="Логін" style="flex:1;min-width:120px;padding:9px 12px;background:#16161e;border:1px solid rgba(255,255,255,0.1);border-radius:5px;color:#e0e0f0;font-size:13px;font-family:inherit;outline:none;">
         <input id="mgr-display-name" placeholder="Ім'я" style="flex:1;min-width:120px;padding:9px 12px;background:#16161e;border:1px solid rgba(255,255,255,0.1);border-radius:5px;color:#e0e0f0;font-size:13px;font-family:inherit;outline:none;">
         <input id="mgr-password" type="password" placeholder="Пароль (мін. 6 символів)" style="flex:1;min-width:120px;padding:9px 12px;background:#16161e;border:1px solid rgba(255,255,255,0.1);border-radius:5px;color:#e0e0f0;font-size:13px;font-family:inherit;outline:none;">
         <input id="mgr-phone" placeholder="Телефон (для публічних карток)" style="flex:1;min-width:160px;padding:9px 12px;background:#16161e;border:1px solid rgba(255,255,255,0.1);border-radius:5px;color:#e0e0f0;font-size:13px;font-family:inherit;outline:none;">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-s);cursor:pointer;white-space:nowrap;">
+          <input type="checkbox" id="mgr-is-admin"> 👑 Адмін
+        </label>
         <button class="btn btn-danger" onclick="addManagerSubmit()">➕ Додати</button>
       </div>
       <div id="mgr-error" style="display:none;color:#e07070;font-size:12px;margin-bottom:14px;"></div>
       ${managers.map(m => `
-        <div style="display:flex;align-items:center;gap:14px;padding:14px 16px;background:var(--card-bg);border:1px solid var(--border);margin-bottom:8px;">
-          <div style="font-size:22px;opacity:0.5;">${m.role === 'admin' ? '👑' : '👤'}</div>
-          <div style="flex:1;min-width:0;">
-            <div style="font-size:13px;font-weight:700;color:var(--text);">${escHtml(m.display_name)} <span style="color:var(--text-m);font-weight:400;">(${escHtml(m.username)})</span></div>
-            <div style="font-size:11px;color:var(--text-s);">${m.role === 'admin' ? 'Адміністратор' : (m.active ? 'Активний' : 'Вимкнений')} ${m.phone ? '· 📞 ' + escHtml(m.phone) : '· без телефону'}</div>
+        <div style="padding:14px 16px;background:var(--card-bg);border:1px solid var(--border);margin-bottom:8px;">
+          <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px;">
+            <div style="font-size:22px;opacity:0.5;flex-shrink:0;">${m.role === 'admin' ? '👑' : '👤'}</div>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:13px;font-weight:700;color:var(--text);">${escHtml(m.display_name)} <span style="color:var(--text-m);font-weight:400;">(${escHtml(m.username)})</span></div>
+              <div style="font-size:11px;color:var(--text-s);">${m.role === 'admin' ? 'Адміністратор' : (m.active ? 'Активний' : 'Вимкнений')} ${m.phone ? '· 📞 ' + escHtml(m.phone) : '· без телефону'}</div>
+            </div>
           </div>
-          <button class="btn btn-ghost" style="font-size:11px;" onclick="editManagerPhone(${m.id}, '${escHtml(m.phone || '')}')">📞 Телефон</button>
-          <button class="btn btn-ghost" style="font-size:11px;" onclick="resetManagerPassword(${m.id}, '${escHtml(m.display_name)}')">🔑 Скинути пароль</button>
-          ${m.role === 'manager' ? `
-            <button class="btn btn-ghost" style="font-size:11px;" onclick="toggleManagerActive(${m.id}, ${!m.active})">${m.active ? '⏸️ Вимкнути' : '▶️ Увімкнути'}</button>
-            <button class="btn btn-ghost" style="font-size:11px;color:#c05050;border-color:rgba(160,40,40,0.4);" onclick="deleteManagerConfirm(${m.id}, '${escHtml(m.display_name)}')">🗑️ Видалити</button>
-          ` : ''}
+          <div style="display:flex;flex-wrap:wrap;gap:6px;">
+            <button class="btn btn-ghost" style="font-size:11px;white-space:nowrap;flex-shrink:0;" onclick="editManagerPhone(${m.id}, '${escHtml(m.phone || '')}')">📞 Телефон</button>
+            <button class="btn btn-ghost" style="font-size:11px;white-space:nowrap;flex-shrink:0;" onclick="resetManagerPassword(${m.id}, '${escHtml(m.display_name)}')">🔑 Скинути пароль</button>
+            ${m.id !== currentUser?.id ? `<button class="btn btn-ghost" style="font-size:11px;white-space:nowrap;flex-shrink:0;" onclick="claimOwnersTo(${m.id}, '${escHtml(m.display_name)}')" title="Перенести всіх власників з мого акаунта йому">🏠 Передати власників</button>` : ''}
+            ${m.id !== currentUser?.id ? `<button class="btn btn-ghost" style="font-size:11px;white-space:nowrap;flex-shrink:0;" onclick="toggleManagerRole(${m.id}, '${escHtml(m.display_name)}', '${m.role === 'admin' ? 'manager' : 'admin'}')">${m.role === 'admin' ? '👤 Зробити менеджером' : '👑 Зробити адміном'}</button>` : ''}
+            ${m.role === 'manager' ? `
+              <button class="btn btn-ghost" style="font-size:11px;white-space:nowrap;flex-shrink:0;" onclick="toggleManagerActive(${m.id}, ${!m.active})">${m.active ? '⏸️ Вимкнути' : '▶️ Увімкнути'}</button>
+              <button class="btn btn-ghost" style="font-size:11px;white-space:nowrap;flex-shrink:0;color:#c05050;border-color:rgba(160,40,40,0.4);" onclick="deleteManagerConfirm(${m.id}, '${escHtml(m.display_name)}')">🗑️ Видалити</button>
+            ` : ''}
+          </div>
         </div>
       `).join('')}
     </div>`;
@@ -3330,13 +3340,14 @@ async function addManagerSubmit() {
   const displayName = document.getElementById('mgr-display-name').value.trim();
   const password = document.getElementById('mgr-password').value;
   const phone = document.getElementById('mgr-phone').value.trim();
+  const role = document.getElementById('mgr-is-admin').checked ? 'admin' : 'manager';
   const errBox = document.getElementById('mgr-error');
   errBox.style.display = 'none';
 
   const res = await fetch('/api/admin/managers', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password, displayName, phone }),
+    body: JSON.stringify({ username, password, displayName, phone, role }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -3344,7 +3355,7 @@ async function addManagerSubmit() {
     errBox.style.display = 'block';
     return;
   }
-  toast('✅ Менеджера додано');
+  toast(role === 'admin' ? '✅ Адміна додано' : '✅ Менеджера додано');
   renderManagersView();
 }
 
@@ -3392,6 +3403,34 @@ async function resetManagerPassword(id, name) {
   // Shown via prompt() (not toast) so admin can select-all + copy — this is
   // the only time the plaintext password will ever be visible anywhere.
   prompt(`Новий пароль для "${name}" — скопіюйте зараз, повторно не покажу:`, newPassword);
+}
+
+// Moves every property-owner record currently under MY OWN account (e.g.
+// owners accidentally added while logged in as admin) to another manager.
+async function claimOwnersTo(id, name) {
+  if (!confirm(`Передати ВСІХ власників об'єктів з мого акаунта менеджеру "${name}"?`)) return;
+  const res = await fetch(`/api/admin/managers/${id}/claim-owners`, { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { toast('❌ ' + (data.error || 'Не вдалося передати власників')); return; }
+  if (data.moved === 0) { toast('У вас немає власників для передачі'); return; }
+  toast(`🏠 Передано власників: ${data.moved} → ${data.toManagerName}`);
+  const ownersRes = await fetch('/api/owners');
+  owners = ownersRes.ok ? await ownersRes.json() : [];
+  if (typeof renderOwnersBoard === 'function') renderOwnersBoard();
+}
+
+async function toggleManagerRole(id, name, newRole) {
+  const verb = newRole === 'admin' ? 'зробити адміном' : 'повернути до ролі менеджера';
+  if (!confirm(`Справді ${verb} "${name}"?`)) return;
+  const res = await fetch(`/api/admin/managers/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role: newRole }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { toast('❌ ' + (data.error || 'Не вдалося змінити роль')); return; }
+  toast(newRole === 'admin' ? `👑 "${name}" тепер адмін` : `👤 "${name}" тепер менеджер`);
+  renderManagersView();
 }
 
 async function deleteManagerConfirm(id, name) {
@@ -3804,6 +3843,38 @@ function closeLightbox() {
   document.getElementById('lightbox-overlay').classList.remove('open');
 }
 
+// Same source values as the "Звідки дізнався" dropdown on the client card —
+// shared between the personal stats view and the admin team-wide breakdown
+// so both always match what managers actually pick.
+const SOURCE_LABELS = {
+  'OLX': '🏠 OLX',
+  'DOM.RIA': '🏠 DOM.RIA',
+  'rieltor.ua': '🏠 rieltor.ua',
+  'Інстаграм': '📷 Інстаграм',
+  'Фейсбук': '📘 Фейсбук',
+  'Тредс': '🧵 Тредс',
+  'Тікток': '🎵 Тікток',
+  'Рекомендації': '🤝 Рекомендації',
+  'Банер': '🪧 Банер',
+  'Інше': '💬 Інше',
+};
+const SOURCE_COLORS = ['#4a9fd4', '#b08030', '#7a50a8', '#308850', '#d68910', '#a84040', '#5a9bd4', '#6a6a76', '#4a7ab0'];
+
+function sourceBreakdown(clientList) {
+  const sourceCountMap = {};
+  clientList.forEach(c => {
+    const key = c.source || '';
+    sourceCountMap[key] = (sourceCountMap[key] || 0) + 1;
+  });
+  return Object.entries(sourceCountMap)
+    .sort((a, b) => b[1] - a[1])
+    .map(([key, count], i) => ({
+      label: key ? (SOURCE_LABELS[key] || `💬 ${key}`) : '❔ Не вказано',
+      count,
+      color: SOURCE_COLORS[i % SOURCE_COLORS.length],
+    }));
+}
+
 function renderStatsView() {
   const boardWrap = document.getElementById('board-wrap');
 
@@ -3828,30 +3899,7 @@ function renderStatsView() {
 
   // Lead source breakdown — same source values as the "Звідки дізнався" field
   // on the client card, so this always matches what managers actually pick.
-  const SOURCE_LABELS = {
-    'OLX': '🏠 OLX',
-    'DOM.RIA': '🏠 DOM.RIA',
-    'rieltor.ua': '🏠 rieltor.ua',
-    'Інстаграм': '📷 Інстаграм',
-    'Фейсбук': '📘 Фейсбук',
-    'Тікток': '🎵 Тікток',
-    'Рекомендації': '🤝 Рекомендації',
-    'Банер': '🪧 Банер',
-    'Інше': '💬 Інше',
-  };
-  const SOURCE_COLORS = ['#4a9fd4', '#b08030', '#7a50a8', '#308850', '#d68910', '#a84040', '#5a9bd4', '#6a6a76', '#4a7ab0'];
-  const sourceCountMap = {};
-  activeClients.forEach(c => {
-    const key = c.source || '';
-    sourceCountMap[key] = (sourceCountMap[key] || 0) + 1;
-  });
-  const sourceRows = Object.entries(sourceCountMap)
-    .sort((a, b) => b[1] - a[1])
-    .map(([key, count], i) => ({
-      label: key ? (SOURCE_LABELS[key] || `💬 ${key}`) : '❔ Не вказано',
-      count,
-      color: SOURCE_COLORS[i % SOURCE_COLORS.length],
-    }));
+  const sourceRows = sourceBreakdown(activeClients);
 
   boardWrap.innerHTML = `
     <div style="max-width:700px;display:flex;flex-direction:column;gap:12px;">
@@ -3940,6 +3988,7 @@ async function renderManagerAnalytics() {
   const purchasedStage = STAGES.find(s => s.prob === 100);
   const purchasedId = purchasedStage ? purchasedStage.id : null;
 
+  const allActive = [];
   const rows = await Promise.all(managers.map(async m => {
     let mClients = [];
     try {
@@ -3947,16 +3996,22 @@ async function renderManagerAnalytics() {
       mClients = r.ok ? await r.json() : [];
     } catch { mClients = []; }
     const active = mClients.filter(c => !c.cold);
+    allActive.push(...active);
     const t = active.length;
     const hot = active.filter(c => c.hot).length;
     const converted = purchasedId != null ? active.filter(c => c.stage === purchasedId).length : 0;
     const noTask = active.filter(c => c.stage !== purchasedId && (!c.tasks || !c.tasks.some(x => !x.done))).length;
     return { name: m.display_name, total: t, hot, converted, noTask, cold: mClients.length - t };
   }));
+  const teamSourceRows = sourceBreakdown(allActive);
+  const teamSourceTotal = allActive.length || 1;
 
   el.innerHTML = `
     <div style="margin-top:20px;padding:22px;background:var(--card-bg);border:1px solid var(--border);box-shadow:var(--shadow);">
-      <div style="font-weight:700;font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--text-s);margin-bottom:16px;">👥 Аналітика по менеджерах</div>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px;">
+        <div style="font-weight:700;font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--text-s);">👥 Аналітика по менеджерах</div>
+        <button class="btn btn-ghost" style="margin-left:auto;font-size:11px;white-space:nowrap;" onclick="notifyMissingTasks()" title="Надіслати менеджерам у Telegram список клієнтів без жодного активного завдання">📣 Нагадати про завдання</button>
+      </div>
       ${rows.length === 0 ? `<div style="text-align:center;padding:20px;color:var(--text-m);font-size:12px;">Немає активних менеджерів</div>` : `
       <div style="overflow-x:auto;">
         <table style="width:100%;border-collapse:collapse;font-size:12px;">
@@ -3986,7 +4041,81 @@ async function renderManagerAnalytics() {
           </tbody>
         </table>
       </div>`}
+    </div>
+    <div style="margin-top:20px;padding:22px;background:var(--card-bg);border:1px solid var(--border);box-shadow:var(--shadow);">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px;">
+        <div style="font-weight:700;font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--text-s);">Звідки приходять клієнти (вся команда)</div>
+        <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-ghost" style="font-size:11px;white-space:nowrap;" onclick="checkMissingSourceStatus()" title="Показати, у кого ще не виправлено джерело">🔍 Перевірити статус</button>
+          <button class="btn btn-ghost" style="font-size:11px;white-space:nowrap;" onclick="notifyMissingSource()" title="Надіслати менеджерам у Telegram список їхніх клієнтів без вказаного джерела">📣 Нагадати заповнити</button>
+        </div>
+      </div>
+      ${teamSourceRows.length === 0 ? `<div style="text-align:center;padding:12px;color:var(--text-m);font-size:12px;">Немає даних</div>` : teamSourceRows.map(s => `
+        <div style="margin-bottom:14px;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:5px;">
+            <span style="font-size:13px;font-weight:600;color:var(--text);">${s.label}</span>
+            <span style="margin-left:auto;font-weight:800;color:${s.color};font-size:15px;">${s.count}</span>
+            <span style="font-size:11px;color:var(--text-m);min-width:32px;text-align:right;">${Math.round(s.count/teamSourceTotal*100)}%</span>
+          </div>
+          <div style="background:var(--bg);height:3px;overflow:hidden;">
+            <div style="height:100%;width:${Math.round(s.count/teamSourceTotal*100)}%;background:${s.color};transition:width .5s;"></div>
+          </div>
+        </div>
+      `).join('')}
+      <div id="missing-source-report"></div>
     </div>`;
+}
+
+// Fetches a live, read-only snapshot of who still hasn't filled in their
+// clients' "Звідки дізнався" and renders it inline — doesn't queue or send
+// anything, so it's safe to click repeatedly to check progress.
+async function checkMissingSourceStatus() {
+  const el = document.getElementById('missing-source-report');
+  if (!el) return;
+  el.innerHTML = `<div style="margin-top:14px;padding:12px;text-align:center;color:var(--text-m);font-size:12px;">Перевіряю...</div>`;
+
+  const res = await fetch('/api/admin/managers/missing-source-report');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { el.innerHTML = ''; toast('❌ Не вдалося перевірити'); return; }
+
+  if (data.total === 0) {
+    el.innerHTML = `<div style="margin-top:14px;padding:12px;text-align:center;color:#308850;font-size:12px;">✅ У всіх клієнтів вказано джерело</div>`;
+    return;
+  }
+
+  el.innerHTML = `
+    <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border);">
+      <div style="font-size:11px;color:var(--text-m);margin-bottom:10px;">Ще не виправлено — ${data.total} клієнт${data.total === 1 ? '' : (data.total < 5 ? 'и' : 'ів')}:</div>
+      ${data.report.map(r => `
+        <div style="margin-bottom:8px;">
+          <div style="font-size:12px;font-weight:700;color:var(--text);">${escHtml(r.manager)} <span style="color:var(--text-m);font-weight:400;">(${r.count})</span></div>
+          <div style="font-size:11px;color:var(--text-s);">${r.names.map(escHtml).join(', ')}</div>
+        </div>
+      `).join('')}
+    </div>`;
+}
+
+// Analyzes every manager's clients for a missing "source" field and pings
+// each affected manager on Telegram with their own list — admin-only,
+// triggered from the team source-breakdown card above.
+async function notifyMissingSource() {
+  if (!confirm('Надіслати менеджерам у Telegram список клієнтів без вказаного джерела?')) return;
+  const res = await fetch('/api/admin/managers/notify-missing-source', { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { toast('❌ ' + (data.error || 'Не вдалося надіслати')); return; }
+  if (data.totalClientsMissing === 0) { toast('✅ У всіх клієнтів вказано джерело'); return; }
+  const skippedLine = data.skippedNoTelegram > 0 ? `, ${data.skippedNoTelegram} без Telegram` : '';
+  toast(`📣 Знайдено ${data.totalClientsMissing} клієнтів без джерела у ${data.managersWithGaps} менеджерів — сповіщено ${data.notified}${skippedLine}`, 8000);
+}
+
+async function notifyMissingTasks() {
+  if (!confirm('Надіслати менеджерам у Telegram список клієнтів без активних завдань?')) return;
+  const res = await fetch('/api/admin/managers/notify-missing-tasks', { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { toast('❌ ' + (data.error || 'Не вдалося надіслати')); return; }
+  if (data.totalClientsMissing === 0) { toast('✅ У всіх клієнтів є активні завдання'); return; }
+  const skippedLine = data.skippedNoTelegram > 0 ? `, ${data.skippedNoTelegram} без Telegram` : '';
+  toast(`📣 Знайдено ${data.totalClientsMissing} клієнтів без завдань у ${data.managersWithGaps} менеджерів — сповіщено ${data.notified}${skippedLine}`, 8000);
 }
 
 // ── Real-time funnel activity monitoring (день/тиждень/місяць/пів року) ────
@@ -6078,6 +6207,31 @@ async function testTgNotification() {
 // Automatic task reminders now run server-side (server/telegram.js) every
 // 60s, independent of any browser being open — see checkAndNotifyAll().
 
+// ── BACKGROUND CLIENTS REFRESH ────────────────────────────────────────
+// `clients` is fetched once at boot() and save() always PUTs the whole
+// array back — so if something changes a client server-side without this
+// tab knowing (e.g. a manager fixes "Звідки дізнався" via the Telegram bot
+// while this tab sits open), the very next unrelated save() here would
+// silently overwrite that fix with this tab's stale copy. Polling every
+// 60s keeps that staleness window short. Skipped entirely while a client
+// is open for editing/viewing or a card is mid-drag, so an in-progress,
+// unsaved edit is never clobbered by an incoming refresh.
+(function initClientsPolling() {
+  async function refreshClients() {
+    if (!currentUser) return;
+    if (document.getElementById('modal-overlay')?.classList.contains('open')) return;
+    if (drawerClientId) return;
+    if (_cdId) return;
+    try {
+      const res = await fetch('/api/clients');
+      if (!res.ok) return;
+      clients = await res.json();
+      renderAll();
+    } catch (err) { /* offline — will retry next tick */ }
+  }
+  setInterval(refreshClients, 60 * 1000);
+})();
+
 // ── CROSS-MANAGER DUPLICATE-PHONE ALERTS ────────────────────────────
 (function initDuplicatePolling() {
   async function pollNotifications() {
@@ -6322,7 +6476,7 @@ async function runAiScan(files, apiKey) {
 {
   "name": "Ім'я та прізвище або ім'я профілю",
   "phone": "номер телефону якщо є, інакше порожньо",
-  "source": "OLX або DOM.RIA або rieltor.ua або Інстаграм або Фейсбук або Тікток або Рекомендації або Банер або Інше",
+  "source": "OLX або DOM.RIA або rieltor.ua або Інстаграм або Фейсбук або Тредс або Тікток або Рекомендації або Банер або Інше",
   "notes": "короткий зміст переписки — що хоче клієнт, деталі"
 }
 Якщо якесь поле невідоме — залиш порожнім рядком.`

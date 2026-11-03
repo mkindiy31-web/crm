@@ -113,3 +113,19 @@ CREATE TABLE IF NOT EXISTS pending_intakes (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_pending_intakes_user ON pending_intakes(user_id, created_at);
+
+-- An EXISTING client missing its "source" field, queued for the same
+-- button-based fix-it flow as new-client intake (see pending_intakes above)
+-- — triggered by the admin's "Нагадати заповнити" action instead of being
+-- created automatically. One row per client; deleted once the manager taps
+-- a source button.
+CREATE TABLE IF NOT EXISTS pending_source_fixes (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  client_id TEXT NOT NULL,
+  client_name TEXT NOT NULL,
+  prompted_at TIMESTAMPTZ,
+  last_reminded_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_pending_source_fixes_user ON pending_source_fixes(user_id, created_at);

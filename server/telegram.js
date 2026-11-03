@@ -1,3 +1,5 @@
+const { DEAL_STAGE_ID } = require('./stages');
+
 const TASK_LABELS = {
   call: 'Дзвінок 📞',
   consultation: 'Консультація 💬',
@@ -136,6 +138,7 @@ async function checkAndNotifyAll(pool) {
 
     for (const row of clientRows) {
       const c = row.data;
+      if (c.stage === DEAL_STAGE_ID) continue; // deal already closed — nothing left to chase
       for (const t of (c.tasks || [])) {
         if (t.done || !t.time || !t.date || !t.id) continue;
         const taskDt = new Date(t.date + 'T' + t.time);
@@ -274,12 +277,74 @@ async function checkAndSendDailyDigest(pool) {
   }
 }
 
+// Once a day at 10:00 Kyiv time, sends each manager a numbered list of their
+// 3 nearest client tasks (by date+time, overdue ones included first since
+// they're the most urgent) — separate from checkAndSendDailyDigest, which
+// only covers the personal to-do list. Same notified_tasks dedup pattern,
+// its own key shape so it can never collide with the to-do digest or a real
+// task id.
+async function checkAndSendClientTaskDigest(pool) {
+  const { hh, mm } = kyivNowParts();
+  if (hh !== '10' || mm !== '00') return;
+
+  const digestKey = `client-digest-${kyivTodayISO()}`;
+
+  const { rows: users } = await pool.query(
+    `SELECT id, tg_settings FROM users
+     WHERE active = true AND tg_settings->>'enabled' = 'true'
+       AND coalesce(tg_settings->>'token', '') != '' AND coalesce(tg_settings->>'chatId', '') != ''`
+  );
+  if (!users.length) return;
+
+  for (const user of users) {
+    const s = user.tg_settings || {};
+
+    const { rows: existing } = await pool.query(
+      'SELECT 1 FROM notified_tasks WHERE user_id = $1 AND task_id = $2',
+      [user.id, digestKey]
+    );
+    if (existing.length) continue;
+
+    await pool.query(
+      'INSERT INTO notified_tasks (user_id, task_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+      [user.id, digestKey]
+    );
+
+    const { rows: clientRows } = await pool.query(
+      'SELECT data FROM clients WHERE manager_id = $1 AND archived_at IS NULL',
+      [user.id]
+    );
+
+    const upcoming = [];
+    for (const row of clientRows) {
+      const c = row.data;
+      if (c.stage === DEAL_STAGE_ID) continue; // deal already closed — nothing left to chase
+      for (const t of (c.tasks || [])) {
+        if (t.done || !t.date) continue;
+        upcoming.push({ clientName: c.name, type: t.type, date: t.date, time: t.time || '' });
+      }
+    }
+    if (!upcoming.length) continue;
+
+    upcoming.sort((a, b) => (a.date + (a.time || '00:00')).localeCompare(b.date + (b.time || '00:00')));
+    const nearest = upcoming.slice(0, 3);
+
+    const lines = nearest.map((t, i) => {
+      const label = TASK_LABELS[t.type] || t.type;
+      return `${i + 1}. ${t.clientName} — ${label}${t.time ? ' о ' + t.time : ''} (${t.date})`;
+    });
+    const msg = `🔔 <b>Найближчі завдання клієнтів</b>\n\n${lines.join('\n')}`;
+    await sendTelegramMessage(s.token, s.chatId, msg);
+  }
+}
+
 module.exports = {
   sendTelegramMessage,
   sendTelegramKeyboard,
   answerCallbackQuery,
   checkAndNotifyAll,
   checkAndSendDailyDigest,
+  checkAndSendClientTaskDigest,
   setWebhook,
   deleteWebhook,
   reRegisterAllWebhooks,

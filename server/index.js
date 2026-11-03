@@ -6,14 +6,14 @@ const pgSession = require('connect-pg-simple')(session);
 
 const { pool, initSchema } = require('./db');
 const { seedAdmin } = require('./seed');
-const { checkAndNotifyAll, checkAndSendDailyDigest, reRegisterAllWebhooks } = require('./telegram');
+const { checkAndNotifyAll, checkAndSendDailyDigest, checkAndSendClientTaskDigest, reRegisterAllWebhooks } = require('./telegram');
 const auth = require('./auth');
 const clientsRouter = require('./routes/clients');
 const ownersRouter = require('./routes/owners');
 const notificationsRouter = require('./routes/notifications');
 const managersRouter = require('./routes/managers');
 const telegramRouter = require('./routes/telegram');
-const { router: telegramWebhookRouter, checkAndRemindPendingIntakes } = require('./routes/telegramWebhook');
+const { router: telegramWebhookRouter, checkAndRemindPendingIntakes, checkAndRemindSourceFixes } = require('./routes/telegramWebhook');
 const teamRouter = require('./routes/team');
 const catalogRouter = require('./routes/catalog');
 const catalogPublicRouter = require('./routes/catalogPublic');
@@ -75,7 +75,9 @@ async function start() {
   setInterval(() => {
     checkAndNotifyAll(pool).catch(err => console.error('Telegram reminder check failed:', err));
     checkAndSendDailyDigest(pool).catch(err => console.error('Telegram daily digest failed:', err));
+    checkAndSendClientTaskDigest(pool).catch(err => console.error('Client task digest failed:', err));
     checkAndRemindPendingIntakes(pool).catch(err => console.error('Pending intake reminder check failed:', err));
+    checkAndRemindSourceFixes(pool).catch(err => console.error('Source fix reminder check failed:', err));
   }, 60 * 1000);
   setTimeout(() => {
     checkAndNotifyAll(pool).catch(err => console.error('Telegram reminder check failed:', err));

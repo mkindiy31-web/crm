@@ -49,6 +49,16 @@ async function upsertClientAndNotify(pgClient, user, c) {
   );
   const oldData = ownRows.length > 0 ? ownRows[0].data : null;
 
+  // Guards against a stale browser tab silently reverting a source that was
+  // just filled in through another channel (e.g. the Telegram source-fix
+  // flow) — a bulk save from a tab that hasn't refreshed in a while sends
+  // whatever it had in memory, which could still be blank. An already-set
+  // source is never erased by an incoming blank one; it can still be
+  // deliberately changed to a DIFFERENT non-blank value.
+  if (oldData?.source && !c.source) {
+    c.source = oldData.source;
+  }
+
   const phones = [phoneNorm, phone2Norm].filter(Boolean);
   let matches = [];
   if (phones.length) {
