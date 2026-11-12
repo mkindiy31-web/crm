@@ -14,6 +14,12 @@ const TASK_LABELS = {
   registration: 'Оформлення 📝',
 };
 
+// Тип задачі словом, як у ранковому зведенні: службовий ключ («call») менеджер
+// бачити не мав би, а значок у зведенні лише шум.
+function taskWord(type) {
+  return String(TASK_LABELS[type] || type || 'Дія').replace(/\s*\p{Extended_Pictographic}\uFE0F?/gu, '').trim();
+}
+
 async function sendTelegramMessage(token, chatId, text) {
   if (!token || !chatId) return false;
   try {
@@ -329,7 +335,7 @@ async function checkAndSendMorningBrief(pool) {
       for (const task of c.tasks || []) {
         if (task.done || !task.date) continue;
         const who = c.name || c.phone || 'Клієнт';
-        const what = `${task.type || 'Дія'}: ${who}${task.time ? ', ' + task.time : ''}`;
+        const what = `${taskWord(task.type)}: ${who}${task.time ? ', ' + task.time : ''}`;
         if (task.date < today) late.push(what);
         else if (task.date === today) due.push(what);
       }

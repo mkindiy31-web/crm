@@ -35,6 +35,19 @@ function priceNum(price) {
 // The site pushes a listing here whenever one is saved there. Idempotent twice
 // over: the event id guards against a repeat of the same push, and the upsert
 // guards against the same listing arriving from a different event.
+// Автор запису на сайті («Спетрук Сергій», «Леся Рудик») -> менеджер СРМ, у
+// якого логін це прізвище. Лише однозначний збіг: два кандидати чи жодного дає
+// null, і обʼєкт лишається нічиїм, а не чужим.
+async function managerByAuthor(name) {
+  const words = String(name || '').toLowerCase().match(/[\p{L}ʼ'’-]+/gu) || [];
+  if (!words.length) return null;
+  const { rows } = await pool.query(
+    'SELECT id FROM users WHERE active = true AND lower(username) = ANY($1::text[])',
+    [words]
+  );
+  return rows.length === 1 ? rows[0].id : null;
+}
+
 router.post('/catalog', async (req, res) => {
   const body = req.body || {};
   const eventId = String(body.event_id || '').trim();
@@ -47,15 +60,19 @@ router.post('/catalog', async (req, res) => {
   if (!fresh) return res.json({ ok: true, duplicate: true, id: item.id });
 
   const data = { ...item, createdByName: 'Сайт', createdAt: new Date().toISOString() };
+  // Обʼєкт сайту належить тому, хто на сайті його автор: інакше він нічий, і
+  // менеджер не бачить свого обʼєкта в боті й не може змінити ціну.
+  const owner = await managerByAuthor(body.fields && body.fields.author_name);
   const { rows } = await pool.query(
     `INSERT INTO catalog_items (id, created_by, data, price_num)
-     VALUES ($1, NULL, $2, $3)
+     VALUES ($1, $4, $2, $3)
      ON CONFLICT (id) DO UPDATE
        SET data = catalog_items.data || $2::jsonb,
            price_num = $3,
+           created_by = COALESCE(catalog_items.created_by, $4),
            updated_at = now()
      RETURNING (xmax = 0) AS created`,
-    [item.id, data, priceNum(item.price)]
+    [item.id, data, priceNum(item.price), owner]
   );
 
   res.json({ ok: true, duplicate: false, created: rows[0].created, id: item.id });
@@ -101,4 +118,4 @@ router.post('/lead', async (req, res) => {
   res.json({ ok: true, id, sent: out.sent, managers: out.managers, known: out.dupes });
 });
 
-module.exports = { router, claimEvent };
+module.exports = { router, claimEvent, managerByAuthor };

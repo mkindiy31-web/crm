@@ -9,7 +9,7 @@
 // waiting for the site, and the bot says exactly that.
 
 const { pool } = require('../db');
-const { sendTelegramMessage, sendTelegramKeyboard } = require('../telegram');
+const { sendTelegramMessage, sendTelegramKeyboard, getFilePath, downloadFileAsBase64 } = require('../telegram');
 const { dropDraft, saveDraft } = require('./objectDialog');
 const siteSync = require('../siteSync');
 
@@ -39,9 +39,35 @@ function buildDescription(data) {
   return bits.join(' ');
 }
 
+// Фото з бота приходять номерами файлів Telegram, а ті живуть лише в цьому
+// боті: ні СРМ, ні сайт їх не покажуть. Тому перед записом кожне фото
+// стягується і лягає в СРМ так само, як фото з форми СРМ (`data:image/jpeg`).
+async function photosFromTelegram(token, list) {
+  const out = [];
+  let lost = 0;
+  for (const p of list) {
+    if (typeof p === 'string' && (p.startsWith('data:') || /^https?:\/\//.test(p))) { out.push(p); continue; }
+    let got = null;
+    for (let attempt = 0; attempt < 2 && !got; attempt++) {
+      try {
+        got = 'data:image/jpeg;base64,' + await downloadFileAsBase64(token, await getFilePath(token, p));
+      } catch (err) {
+        if (attempt) console.error('publishDraft: photo download failed:', err.message);
+      }
+    }
+    if (got) out.push(got); else lost++;
+  }
+  return { photos: out, lost };
+}
+
 async function publishDraft(userId, s, draft) {
-  const data = draft.item_data || {};
+  const raw = draft.item_data || {};
   const id = 'bot-' + draft.id;
+
+  await sendTelegramMessage(s.token, s.chatId,
+    `Публікую: ${(raw.photos || []).length} фото і дані йдуть на сайт, це до хвилини.`);
+  const got = await photosFromTelegram(s.token, raw.photos || []);
+  const data = { ...raw, photos: got.photos };
 
   const item = {
     ...data,
@@ -73,21 +99,24 @@ async function publishDraft(userId, s, draft) {
 
   await dropDraft(draft.id);
 
-  const photos = (data.photos || []).length;
+  const photos = data.photos.length;
   const onSite = await siteSync.pushListing(id, item).catch(err => {
     console.error('publishDraft: site push failed:', err);
     return { ok: false };
   });
 
   const where = onSite.ok
-    ? `Обʼєкт на сайті і в срм.\n${onSite.url || ''}`
+    ? 'Обʼєкт на сайті і в срм.'
     : onSite.skipped
       ? 'Обʼєкт у срм. Канал до сайту ще не налаштований, тому на вітрину він не пішов.'
       : 'Обʼєкт у срм. Сайт зараз не відповідає, зміна в черзі і піде сама, щойно він повернеться.';
 
+  const lostLine = got.lost ? `\n${got.lost} фото Telegram не віддав, на сайт і в срм вони не пішли.` : '';
+  const rows = [[{ text: 'Мої обʼєкти', callback_data: 'o:mine' }]];
+  if (onSite.ok && /^https:\/\//.test(onSite.url || '')) rows.unshift([{ text: 'Відкрити на сайті', url: onSite.url }]);
   await sendTelegramKeyboard(s.token, s.chatId,
-    `${where}\nФото ${photos}, головне перше.`,
-    [[{ text: 'Мої обʼєкти', callback_data: 'o:mine' }]]);
+    `${where}\nФото ${photos}, головне перше.${lostLine}`,
+    rows);
 
   return true;
 }

@@ -65,7 +65,7 @@ function objectLine(row, days = STALE_DAYS) {
 
 function objectsText(list) {
   if (!list.total) return 'Обʼєктів за тобою поки немає. Напиши «обʼєкт», щоб завести перший.';
-  const lines = [`У тебе ${list.total} обʼєктів, ${list.forSale} у продажу.`, ''];
+  const lines = [`У тебе ${list.total} ${forms(list.total, 'обʼєкт', 'обʼєкти', 'обʼєктів')}, ${list.forSale} у продажу.`, ''];
   for (const row of list.items.slice(0, SHOWN)) {
     const o = objectLine(row);
     lines.push(`<b>${esc(o.head)}</b>${o.specs ? '\n' + esc(o.specs) : ''}`);
@@ -152,7 +152,7 @@ function clientLine(row, today) {
 
 function clientsText(list) {
   if (!list.total) return 'Клієнтів за тобою поки немає.';
-  const lines = [`${list.total} активних, ${list.needToday} потребують дії сьогодні.`, ''];
+  const lines = [`${list.total} ${forms(list.total, 'активний', 'активні', 'активних')}, ${list.needToday} ${forms(list.needToday, 'потребує', 'потребують', 'потребують')} дії сьогодні.`, ''];
   for (const row of list.items.slice(0, SHOWN)) {
     const c = clientLine(row, list.today);
     lines.push(`<b>${esc(c.name)}</b>${c.want ? '\n' + esc(c.want) : ''}`);
@@ -263,6 +263,15 @@ async function clearWaiting(userId) {
 // A manager owns the listings they entered and the clients on their own cards.
 // An admin may act on any of them. The check runs BEFORE the write, and a
 // refusal says why instead of failing silently.
+// 1 обʼєкт, 2 обʼєкти, 5 обʼєктів, 11 обʼєктів, 21 обʼєкт
+function forms(n, one, few, many) {
+  const a = Math.abs(n) % 100, b = a % 10;
+  if (a > 10 && a < 20) return many;
+  if (b === 1) return one;
+  if (b >= 2 && b <= 4) return few;
+  return many;
+}
+
 async function mayTouchObject(userId, role, row) {
   if (!row) return 'Обʼєкта вже немає.';
   if (role === 'admin') return null;
@@ -302,7 +311,7 @@ async function handlePultCallback(userId, s, data, cqId) {
   const { role } = await userRole(userId);
   const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Kyiv' });
 
-  if (action === 'o') { await ack(); await showObjects(userId, s); return true; }
+  if (action === 'o' && !id) { await ack(); await showObjects(userId, s); return true; }
   if (action === 'c') {
     if (!id) { await ack(); await showClients(userId, s); return true; }
     const row = await clientCard(id, userId);
@@ -334,8 +343,18 @@ async function handlePultCallback(userId, s, data, cqId) {
 
   if (action === 'close') { await ack(); await clearWaiting(userId); return true; }
 
-  if (action === 'o' || action === 'price' || action === 'off' || action === 'on') {
-    // решта гілок обʼєкта нижче
+  if (action === 'o') {
+    const row = await objectCard(id);
+    if (!row) {
+      await ack();
+      await sendTelegramMessage(s.token, s.chatId, 'Цього обʼєкта вже немає в срм.');
+      return true;
+    }
+    const deny = await mayTouchObject(userId, role, row);
+    if (deny) { await ack(deny); await sendTelegramMessage(s.token, s.chatId, deny); return true; }
+    await ack();
+    await sendTelegramKeyboard(s.token, s.chatId, objectCardText(row), objectCardRows(row));
+    return true;
   }
 
   if (action === 'price' || action === 'off' || action === 'on') {

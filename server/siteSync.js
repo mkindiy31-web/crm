@@ -5,9 +5,12 @@
 // because neither side is always up — the site is on a shared host behind
 // Cloudflare, the CRM on a Railway dyno that sleeps.
 
+const crypto = require('crypto');
 const { pool } = require('./db');
 
 const SITE_TIMEOUT_MS = 8000;
+// Одне фото сайт приймає довше: медіатека, знак, webp на спільному хостингу.
+const PHOTO_TIMEOUT_MS = 60000;
 // Minutes after the previous try, same ladder the site uses.
 const BACKOFF = [1, 5, 30, 120, 360];
 
@@ -46,10 +49,10 @@ function siteIdOf(crmId, data) {
   return own > 0 ? own : 0;
 }
 
-async function postToSite(payload) {
-  const url = String(process.env.SITE_URL).replace(/\/+$/, '') + '/wp-json/urban-crm/v1/listing';
+async function postToSite(payload, route = 'listing', timeoutMs = SITE_TIMEOUT_MS) {
+  const url = String(process.env.SITE_URL).replace(/\/+$/, '') + '/wp-json/urban-crm/v1/' + route;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SITE_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const r = await fetch(url, {
       method: 'POST',
@@ -65,7 +68,7 @@ async function postToSite(payload) {
     if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
     let body = {};
     try { body = JSON.parse(text); } catch { /* site answered 200 with non-JSON */ }
-    return { ok: true, postId: body.post_id || 0, status: body.status || '', url: body.url || '' };
+    return { ok: true, postId: body.post_id || 0, status: body.status || '', url: body.url || '', id: body.id || 0 };
   } catch (err) {
     return { ok: false, error: err.name === 'AbortError' ? 'timeout' : String(err.message || err) };
   } finally {
@@ -97,10 +100,61 @@ async function rememberSiteId(crmId, postId) {
 
 // Called right after a listing changes in the CRM. Never throws: a site that is
 // down must not fail the save that just happened here.
+// ── фото ───────────────────────────────────────────────────────────────────
+// Фото в СРМ лежать як `data:image/…` (з бота і з форми СРМ) або адресою на
+// сайті (47 перенесених з сайту, у них свої вкладення). Вантажаться лише
+// перші, і кожне один раз: відбиток фото ключ, номер вкладення на сайті
+// записується в `sitePhotos`, повтор черги чи зміна ціни фото не шле наново.
+function isDataPhoto(p) {
+  return typeof p === 'string' && /^data:image\/(jpeg|png|webp);base64,/.test(p);
+}
+function photoKey(p) {
+  return crypto.createHash('sha1').update(p).digest('hex').slice(0, 24);
+}
+
+async function syncPhotos(crmId, data) {
+  const photos = Array.isArray(data.photos) ? data.photos : [];
+  // Змішані чи лише адреси: галерею на сайті не чіпаємо, вона там своя.
+  if (!photos.length || !photos.every(isDataPhoto)) return { ok: true, ids: null };
+  const known = { ...(data.sitePhotos || {}) };
+  const ids = [];
+  for (const p of photos) {
+    const key = photoKey(p);
+    if (!known[key]) {
+      const res = await postToSite(
+        { crm_id: crmId, key, data: p.slice(p.indexOf(',') + 1) }, 'photo', PHOTO_TIMEOUT_MS);
+      if (!res.ok || !res.id) return { ok: false, permanent: res.permanent, error: res.error || 'фото без номера' };
+      known[key] = res.id;
+      await pool.query(
+        `UPDATE catalog_items SET data = data || jsonb_build_object('sitePhotos', $2::jsonb) WHERE id = $1`,
+        [crmId, JSON.stringify(known)]
+      );
+    }
+    ids.push(known[key]);
+  }
+  return { ok: true, ids };
+}
+
+// Логін менеджера (прізвище): сайт ставить його автором запису.
+async function agentOf(crmId) {
+  const { rows } = await pool.query(
+    'SELECT u.username FROM catalog_items c JOIN users u ON u.id = c.created_by WHERE c.id = $1', [crmId]);
+  return rows[0] ? rows[0].username : '';
+}
+
+async function sendListing(crmId, data) {
+  const ph = await syncPhotos(crmId, data);
+  const payload = toSitePayload(crmId, data);
+  const agent = await agentOf(crmId);
+  if (agent) payload.item.agent = agent;
+  if (!ph.ok) return { res: ph, payload };
+  if (ph.ids) payload.item.photoIds = ph.ids;
+  return { res: await postToSite(payload), payload };
+}
+
 async function pushListing(crmId, data) {
   if (!siteConfigured()) return { ok: false, skipped: true };
-  const payload = toSitePayload(crmId, data);
-  const res = await postToSite(payload);
+  const { res, payload } = await sendListing(crmId, data);
   if (res.ok) {
     await rememberSiteId(crmId, res.postId);
     return res;
@@ -122,7 +176,12 @@ async function drain(limit = 20) {
 
   let sent = 0, pending = 0, failed = 0;
   for (const row of rows) {
-    const res = await postToSite(row.payload);
+    // Черга шле найсвіжіший стан обʼєкта, разом із фото, а не знімок на момент
+    // збою: фото в знімку немає, вони вантажаться окремо.
+    const { rows: cur } = await pool.query('SELECT data FROM catalog_items WHERE id = $1', [row.crm_id]);
+    const res = cur[0]
+      ? (await sendListing(row.crm_id, cur[0].data)).res
+      : await postToSite(row.payload);
     if (res.ok) {
       await pool.query("UPDATE site_queue SET status = 'sent', last_error = NULL WHERE id = $1", [row.id]);
       await rememberSiteId(row.crm_id, res.postId);
@@ -147,4 +206,4 @@ async function drain(limit = 20) {
   return { sent, pending, failed };
 }
 
-module.exports = { pushListing, drain, toSitePayload, siteIdOf, siteConfigured, BACKOFF };
+module.exports = { pushListing, drain, toSitePayload, siteIdOf, siteConfigured, syncPhotos, isDataPhoto, BACKOFF };
