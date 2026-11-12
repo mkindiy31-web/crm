@@ -99,7 +99,8 @@ function objectCardText(row) {
   lines.push(`${o.price}, ${o.status}`);
   const age = daysSince(row.created_at);
   if (age !== null) lines.push(`У срм ${age} дн.`);
-  if (d.siteId) lines.push('На сайті так');
+  // Обʼєкт із сайту несе sitePostId, створений у СРМ дістає siteId від сайту.
+  if (d.siteId || d.sitePostId) lines.push('На сайті так');
   else if (d.siteStatus === 'pending') lines.push('На сайт ще не пішов');
   const photos = (d.photos || []).length;
   if (photos) lines.push(`Фото ${photos}`);

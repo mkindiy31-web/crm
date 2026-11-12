@@ -28,7 +28,22 @@ function toSitePayload(crmId, data) {
   for (const key of keep) {
     if (data[key] !== undefined && data[key] !== null && data[key] !== '') item[key] = data[key];
   }
-  return { crm_id: crmId, site_id: data.siteId || 0, item };
+  return { crm_id: crmId, site_id: siteIdOf(crmId, data), item };
+}
+
+// Номер запису на сайті. Обʼєкт, створений у СРМ, дістає `siteId` у відповідь
+// сайту; обʼєкт, що прийшов із сайту мостом, несе `sitePostId` і id виду
+// `site-6885`. Без двох останніх сайт не впізнавав свій же запис і створював
+// опублікований дубль (12.11.2026, обʼєкт 6885 -> дубль 8163).
+// Запис, з якого обʼєкт прийшов, головніший за `siteId`: той міг лишитись від
+// дубля і вести не туди.
+function siteIdOf(crmId, data) {
+  const fromSite = parseInt(data.sitePostId, 10);
+  if (fromSite > 0) return fromSite;
+  const m = /^site-(\d+)$/.exec(String(crmId));
+  if (m) return parseInt(m[1], 10);
+  const own = parseInt(data.siteId, 10);
+  return own > 0 ? own : 0;
 }
 
 async function postToSite(payload) {
@@ -132,4 +147,4 @@ async function drain(limit = 20) {
   return { sent, pending, failed };
 }
 
-module.exports = { pushListing, drain, toSitePayload, siteConfigured, BACKOFF };
+module.exports = { pushListing, drain, toSitePayload, siteIdOf, siteConfigured, BACKOFF };
