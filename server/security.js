@@ -29,6 +29,9 @@ function securityHeaders(req, res, next) {
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Content-Security-Policy', CSP);
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  // СРМ закрита, а картки /o/:id дублюють сайт: пошуковик не індексує нічого
+  // на цьому домені (Safe Browsing уже раз позначав сторінку входу).
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
   // Railway терминує TLS на своєму проксі, тому req.secure тут false: про https
   // знає лише заголовок від проксі (app.set('trust proxy', 1) вище в index.js).
   if (req.secure || req.get('x-forwarded-proto') === 'https') {

@@ -81,6 +81,7 @@ app.use('/api/stats', auth.requireAuth, statsRouter);
 
 const CRM_HTML_PATH = path.join(__dirname, '..', 'crm.html');
 const OBJECT_HTML_PATH = path.join(__dirname, '..', 'object.html');
+app.get('/robots.txt', (req, res) => res.type('text/plain').send('User-agent: *\nDisallow: /\n'));
 app.get('/crm.html', (req, res) => res.sendFile(CRM_HTML_PATH));
 app.get('/o/:id', (req, res) => res.sendFile(OBJECT_HTML_PATH));
 app.get('/', (req, res) => res.redirect('/crm.html'));
