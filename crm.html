@@ -6016,7 +6016,11 @@ function launchConfetti(client) {
 
 function openTgSettings() {
   const s = getTgSettings();
-  document.getElementById('tg-token').value   = s.token || '';
+  // Значення токена сервер більше не віддає, тому поле стоїть порожнім, а
+  // підказка каже, чи він уже збережений.
+  const tokenField = document.getElementById('tg-token');
+  tokenField.value = '';
+  tokenField.placeholder = s.tokenSet ? 'збережено, введіть новий лише для заміни' : '123456789:ABCdef...';
   document.getElementById('tg-chat-id').value = s.chatId || '';
   document.getElementById('tg-advance').value = s.advance || '60';
   document.getElementById('tg-enabled').checked = !!s.enabled;
@@ -6042,6 +6046,7 @@ async function loadTgSettings() {
 
 async function saveTgSettings() {
   const s = {
+    // порожнє поле означає «лишити збережений токен»
     token:   document.getElementById('tg-token').value.trim(),
     chatId:  document.getElementById('tg-chat-id').value.trim(),
     advance: document.getElementById('tg-advance').value,
@@ -6066,7 +6071,7 @@ function updateTgStatus() {
   const s = getTgSettings();
   const el = document.getElementById('tg-status');
   if (!el) return;
-  if (s.enabled && s.token && s.chatId) {
+  if (s.enabled && s.tokenSet && s.chatId) {
     el.textContent = '🟢 Активно';
     el.style.color = '#50a870';
   } else if (!s.enabled) {
@@ -6082,7 +6087,7 @@ async function sendPhoneToTgDay(e, id) {
   e.stopPropagation();
   const btn = e.currentTarget;
   const s = getTgSettings();
-  if (!s.token || !s.chatId) {
+  if (!s.tokenSet || !s.chatId) {
     toast('⚠️ Спочатку налаштуйте Telegram — сайдбар → ✈️ Telegram сповіщення');
     return;
   }
@@ -6107,7 +6112,7 @@ async function sendPhoneToTgDay(e, id) {
 async function sendPhoneToTgFromDrawer() {
   if (!drawerClientId) return;
   const s = getTgSettings();
-  if (!s.token || !s.chatId) {
+  if (!s.tokenSet || !s.chatId) {
     toast('⚠️ Спочатку налаштуйте Telegram — сайдбар → ✈️ Telegram сповіщення');
     return;
   }
@@ -6129,7 +6134,7 @@ async function sendPhoneToTgFromDrawer() {
 async function sendPhoneToTg(e, id) {
   e.stopPropagation();
   const s = getTgSettings();
-  if (!s.token || !s.chatId) {
+  if (!s.tokenSet || !s.chatId) {
     toast('⚠️ Спочатку налаштуйте Telegram — сайдбар → ✈️ Telegram сповіщення');
     return;
   }
@@ -6164,32 +6169,17 @@ function normPhone(raw) {
 
 async function sendTelegramMsg(text) {
   const s = getTgSettings();
-  if (!s.token || !s.chatId) return false;
+  if (!s.tokenSet || !s.chatId) return false;
   try {
-    const r = await fetch(`https://api.telegram.org/bot${s.token}/sendMessage`, {
+    const r = await fetch('/api/telegram/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: s.chatId, text, parse_mode: 'HTML' }),
+      body: JSON.stringify({ text }),
     });
     return r.ok;
   } catch { return false; }
 }
 
-async function sendTelegramContact(phone, firstName, lastName) {
-  const s = getTgSettings();
-  if (!s.token || !s.chatId) return false;
-  // normalize phone: keep digits and leading +
-  const raw = String(phone).replace(/[^\d+]/g, '');
-  const normalized = raw.startsWith('+') ? raw : '+' + raw;
-  try {
-    const r = await fetch(`https://api.telegram.org/bot${s.token}/sendContact`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: s.chatId, phone_number: normalized, first_name: firstName || ' ', last_name: lastName || '' }),
-    });
-    return r.ok;
-  } catch { return false; }
-}
 
 async function testTgNotification() {
   const btn = document.querySelector('#tg-overlay .btn-ghost');

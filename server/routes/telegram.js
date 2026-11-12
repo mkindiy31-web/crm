@@ -5,9 +5,12 @@ const { sendTelegramMessage, setWebhook, deleteWebhook } = require('../telegram'
 
 const router = express.Router();
 
+// Назовні не йде ні секрет webhook, ні сам токен бота: з токеном у браузері
+// будь-який XSS у СРМ стає повним доступом до чату агенції. Інтерфейсу
+// достатньо знати, що токен збережений.
 function stripSecret(settings) {
-  const { webhookSecret, ...rest } = settings;
-  return rest;
+  const { webhookSecret, token, ...rest } = settings;
+  return { ...rest, tokenSet: !!(token && String(token).trim()) };
 }
 
 router.get('/settings', async (req, res) => {
@@ -20,8 +23,11 @@ router.put('/settings', async (req, res) => {
   const { rows } = await pool.query('SELECT tg_settings FROM users WHERE id = $1', [req.user.id]);
   const prev = rows[0]?.tg_settings || {};
 
+  // Порожнє поле означає «не міняти»: інтерфейс більше не отримує токен,
+  // тому не може надіслати його назад при кожному збереженні.
+  const nextToken = (token || '').trim() || (prev.token || '');
   const settings = {
-    token: (token || '').trim(),
+    token: nextToken,
     chatId: (chatId || '').trim(),
     advance: advance || '60',
     enabled: !!enabled,
@@ -29,7 +35,7 @@ router.put('/settings', async (req, res) => {
   };
 
   let webhookWarning = null;
-  const tokenChanged = prev.token && prev.token !== settings.token;
+  const tokenChanged = prev.token && prev.token !== nextToken;
   if (tokenChanged && prev.token) {
     await deleteWebhook(prev.token);
   }
@@ -50,6 +56,20 @@ router.put('/settings', async (req, res) => {
   const response = stripSecret(settings);
   if (webhookWarning) response.webhookWarning = webhookWarning;
   res.json(response);
+});
+
+// Повідомлення в чат шле сервер: раніше це робив сам інтерфейс, і для цього
+// йому віддавали токен бота.
+router.post('/send', async (req, res) => {
+  const text = String((req.body && req.body.text) || '').trim();
+  if (!text) return res.status(400).json({ ok: false, error: 'Немає тексту' });
+  const { rows } = await pool.query('SELECT tg_settings FROM users WHERE id = $1', [req.user.id]);
+  const s = rows[0]?.tg_settings || {};
+  if (!s.enabled || !s.token || !s.chatId) {
+    return res.status(400).json({ ok: false, error: 'Telegram не налаштований' });
+  }
+  const ok = await sendTelegramMessage(s.token, s.chatId, text.slice(0, 4000));
+  res.status(ok ? 200 : 502).json({ ok });
 });
 
 router.post('/test', async (req, res) => {

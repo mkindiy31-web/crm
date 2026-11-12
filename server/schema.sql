@@ -114,6 +114,129 @@ CREATE TABLE IF NOT EXISTS pending_intakes (
 );
 CREATE INDEX IF NOT EXISTS idx_pending_intakes_user ON pending_intakes(user_id, created_at);
 
+-- Every call that writes carries an event id from the caller. The primary key
+-- makes a repeat harmless: the second insert conflicts, the route answers 200
+-- and writes nothing, so a retry after a timeout cannot create a second listing.
+CREATE TABLE IF NOT EXISTS integration_events (
+  event_id TEXT PRIMARY KEY,
+  source TEXT NOT NULL, -- 'site' | 'bot' | portal slug
+  kind TEXT NOT NULL,   -- 'catalog_upsert' | 'lead' | ...
+  result JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_integration_events_created ON integration_events(created_at);
+
+-- A listing the manager is entering through the bot, step by step, held here
+-- until it is published or dropped. Separate from pending_intakes (clients):
+-- different fields, and a different life — an intake nags hourly, a listing
+-- draft waits as long as it takes. `step` is the state the dialog is in,
+-- `edit_field` the single field being redone from the confirm screen.
+CREATE TABLE IF NOT EXISTS pending_objects (
+  id TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  item_data JSONB NOT NULL,
+  step TEXT NOT NULL DEFAULT 'photos',
+  edit_field TEXT,
+  prompted_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_pending_objects_user ON pending_objects(user_id, created_at);
+
+-- Changes waiting to reach the site: a price edit, a listing taken off the
+-- market, a listing the bot just published. The site is a shared host behind
+-- Cloudflare and is not always there, and losing a price change costs more
+-- than a few minutes of delay. Only the newest change per listing is kept
+-- pending: an older price on its way is not worth sending.
+CREATE TABLE IF NOT EXISTS site_queue (
+  id SERIAL PRIMARY KEY,
+  crm_id TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  tries SMALLINT NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'sent' | 'failed'
+  last_error TEXT,
+  next_try_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_site_queue_due ON site_queue(status, next_try_at);
+CREATE INDEX IF NOT EXISTS idx_site_queue_crm ON site_queue(crm_id);
+
+-- A request from the site's form, before anyone takes it. It stays here,
+-- belonging to nobody, until a manager taps "Беру собі" in the bot: only then
+-- does a row appear in `clients`, owned by that manager. A card per manager
+-- would be seven cards for one request.
+CREATE TABLE IF NOT EXISTS site_leads (
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL,
+  phone_norm TEXT,
+  taken_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  taken_at TIMESTAMPTZ,
+  client_id TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_site_leads_open ON site_leads(taken_by, created_at);
+CREATE INDEX IF NOT EXISTS idx_site_leads_phone ON site_leads(phone_norm);
+
+-- What the bot is waiting for from this manager right now: a new price, a note,
+-- a call time. One row per manager, because one person answers one question at
+-- a time. Separate from pending_objects, which holds a whole listing being
+-- entered step by step.
+CREATE TABLE IF NOT EXISTS pult_state (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  waiting TEXT,   -- 'price' | 'note' | 'call'
+  target TEXT,    -- catalog_items.id or clients.id
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Every job that runs on a timer has a row here once somebody touches its
+-- switch. No row means enabled with the defaults from automations.js, so the
+-- registry could be added without silently stopping reminders that already ran.
+CREATE TABLE IF NOT EXISTS automations (
+  key TEXT PRIMARY KEY,
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  params JSONB NOT NULL DEFAULT '{}'::jsonb,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+);
+
+-- Run log. Only runs that sent something, skipped something or failed land
+-- here: seven automations tick every minute, and a row per tick would bury
+-- the one line somebody is looking for.
+CREATE TABLE IF NOT EXISTS automation_runs (
+  id SERIAL PRIMARY KEY,
+  key TEXT NOT NULL,
+  ran_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  sent INTEGER NOT NULL DEFAULT 0,
+  skipped INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  detail JSONB
+);
+CREATE INDEX IF NOT EXISTS idx_automation_runs_key ON automation_runs(key, ran_at DESC);
+
+-- "This exact thing was already sent." The primary key is the guard, so two
+-- parallel workers cannot both decide to send: the second insert returns
+-- nothing. Listing nudges put the listing's updated_at into the key, which is
+-- what re-arms them after the listing finally moves.
+CREATE TABLE IF NOT EXISTS automation_sent (
+  key TEXT NOT NULL,
+  dedup_key TEXT NOT NULL,
+  sent_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (key, dedup_key)
+);
+
+-- Спроби входу. Лічильник живе в базі, а не в памʼяті процесу: перезапуск
+-- контейнера не має бути способом обнулити підбір пароля. Вікно сповзаюче,
+-- тому блок спливає сам і власник не лишається замкненим.
+CREATE TABLE IF NOT EXISTS login_attempts (
+  id SERIAL PRIMARY KEY,
+  username TEXT NOT NULL,
+  ip TEXT NOT NULL,
+  ok BOOLEAN NOT NULL DEFAULT false,
+  at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_login_attempts_user ON login_attempts(username, at DESC);
+CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip, at DESC);
+
 -- An EXISTING client missing its "source" field, queued for the same
 -- button-based fix-it flow as new-client intake (see pending_intakes above)
 -- — triggered by the admin's "Нагадати заповнити" action instead of being

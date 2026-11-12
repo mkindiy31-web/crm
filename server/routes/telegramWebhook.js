@@ -6,6 +6,10 @@ const { upsertClientAndNotify } = require('../clientOps');
 const { sendTelegramMessage, sendTelegramKeyboard, answerCallbackQuery, getFilePath, downloadFileAsBase64, TASK_LABELS, addDaysISO, kyivTodayISO } = require('../telegram');
 const { extractBuyers, extractTextUpdate, extractPersonalTodo, extractClientTaskByName, extractNewClientFromText, extractBudgetAndNeed, extractTaskFromText } = require('../aiIntake');
 const { STAGES, DEAL_STAGE_ID } = require('../stages');
+const objectDialog = require('./objectDialog');
+const objectIntake = require('../objectIntake');
+const leads = require('../leads');
+const pult = require('../pult');
 
 const router = express.Router();
 
@@ -457,14 +461,18 @@ async function checkAndRemindPendingIntakes(pool) {
     WHERE pi.prompted_at IS NOT NULL
       AND COALESCE(pi.last_reminded_at, pi.prompted_at) <= now() - interval '1 hour'
   `);
+  let sent = 0, skipped = 0;
   for (const row of rows) {
     const s = row.tg_settings || {};
-    if (!s.enabled || !s.token || !s.chatId) continue;
+    if (!s.enabled || !s.token || !s.chatId) { skipped++; continue; }
     if (row.step === 'source') await sendSourcePrompt(s, row, true);
     else if (row.step === 'details') await sendDetailsPrompt(s, row, true);
     else await sendTaskPrompt(s, row, true);
     await pool.query('UPDATE pending_intakes SET last_reminded_at = now() WHERE id = $1', [row.id]);
+    sent++;
   }
+
+  return { sent, skipped };
 }
 
 async function processBatch(userId, fileIds) {
@@ -921,14 +929,54 @@ async function processTextUpdate(userId, text) {
   }
 }
 
-function scheduleFlush(key, userId) {
+function scheduleFlush(key, userId, settings) {
   const entry = pendingBatches.get(key);
   if (!entry) return;
   clearTimeout(entry.timer);
   entry.timer = setTimeout(() => {
     pendingBatches.delete(key);
+    if (key.startsWith('obj:')) {
+      objectDialog.handlePhotos(userId, settings, entry.fileIds)
+        .catch(err => console.error('objectDialog.handlePhotos error:', err));
+      return;
+    }
     processBatch(userId, entry.fileIds).catch(err => console.error('AI intake processBatch error:', err));
   }, DEBOUNCE_MS);
+}
+
+// Listing photos have their own, larger cap: a flat is photographed from every
+// room, and the ten-photo limit for client screenshots would cut the batch
+// without saying so.
+function photoCapFor(key) {
+  return key.startsWith('obj:') ? objectIntake.MAX_OBJECT_PHOTOS : MAX_PHOTOS;
+}
+
+const MENU_ROWS = [
+  [{ text: 'Додати обʼєкт', callback_data: 'o:start' }, { text: 'Мої обʼєкти', callback_data: 'o:mine' }],
+  [{ text: 'Мої клієнти', callback_data: 'o:clients' }, { text: 'Задачі на день', callback_data: 'o:today' }],
+];
+
+// Managers type the apostrophe four different ways depending on the keyboard:
+// the proper ʼ, a straight ', a curly ’ or nothing at all. All of them mean the
+// same word, and a miss here sends the message down the wrong branch entirely.
+const OBJ_WORD = 'об[\u02bc\u2019\u0027\u0060\u00b4]?\u0454кт';
+const NEW_OBJECT_RE = new RegExp(
+  `(?<![\\p{L}\\d])(?:(?:додати|додай|новий|заведи|завести)\\s+)?${OBJ_WORD}(?![\\p{L}\\d])`,
+  'iu'
+);
+
+function looksLikeNewObject(text) {
+  return NEW_OBJECT_RE.test(String(text || ''));
+}
+
+async function handleCommand(userId, s, text) {
+  const cmd = text.trim().split(/[\s@]/)[0].toLowerCase();
+  if (cmd === '/obyekt' || cmd === '/object') return objectDialog.startObject(userId, s);
+  if (cmd === '/start' || cmd === '/menu' || cmd === '/help') {
+    return sendTelegramKeyboard(s.token, s.chatId,
+      'Я веду обʼєкти і клієнтів Urban Estate. Обирай, з чого почати.', MENU_ROWS);
+  }
+  return sendTelegramKeyboard(s.token, s.chatId, 'Такої команди не знаю. Ось що вмію.', MENU_ROWS);
 }
 
 router.post('/:userId', async (req, res) => {
@@ -955,6 +1003,21 @@ router.post('/:userId', async (req, res) => {
     if (update.callback_query) {
       const cq = update.callback_query;
       if (String(cq.message?.chat?.id) !== String(s.chatId)) return;
+      if ((cq.data || '').startsWith('p:')) {
+        pult.handlePultCallback(userId, s, cq.data, cq.id)
+          .catch(err => console.error('handlePultCallback error:', err));
+        return;
+      }
+      if ((cq.data || '').startsWith('l:')) {
+        leads.handleLeadCallback(userId, s, cq.data, cq.id)
+          .catch(err => console.error('handleLeadCallback error:', err));
+        return;
+      }
+      if ((cq.data || '').startsWith('o:')) {
+        objectDialog.handleCallback(userId, s, cq.data, cq.id)
+          .catch(err => console.error('objectDialog.handleCallback error:', err));
+        return;
+      }
       const data = cq.data || '';
       const mNew = /^src:(.+):(\d+)$/.exec(data);
       const mFix = /^fixsrc:(.+):(\d+)$/.exec(data);
@@ -974,28 +1037,51 @@ router.post('/:userId', async (req, res) => {
     if (!msg || String(msg.chat?.id) !== String(s.chatId)) return;
 
     if (!Array.isArray(msg.photo) || !msg.photo.length) {
-      if (msg.text && !msg.text.startsWith('/')) {
-        const pendingStep = await getActiveTextStepIntake(userId);
-        if (pendingStep?.step === 'details') {
-          handleDetailsAnswer(userId, pendingStep, msg.text).catch(err => console.error('handleDetailsAnswer error:', err));
-        } else if (pendingStep?.step === 'task') {
-          finalizePendingIntake(userId, pendingStep, msg.text).catch(err => console.error('finalizePendingIntake error:', err));
-        } else {
-          processTextUpdate(userId, msg.text).catch(err => console.error('processTextUpdate error:', err));
-        }
+      if (!msg.text) return;
+
+      // Commands used to be dropped here, which is why /start did nothing.
+      if (msg.text.startsWith('/')) {
+        handleCommand(userId, s, msg.text).catch(err => console.error('handleCommand error:', err));
+        return;
+      }
+
+      // A listing being entered owns the conversation until it ends.
+      const objectDraft = await objectDialog.getDraft(userId);
+      if (objectDraft && !objectIntake.isTerminal(objectDraft.step)) {
+        objectDialog.handleText(userId, s, msg.text).catch(err => console.error('objectDialog.handleText error:', err));
+        return;
+      }
+      // Пульт чекає відповіді (нову ціну, нотатку, час дзвінка): вона має
+      // перевагу над розпізнаванням фраз, інакше «84500» піде в інший шлях.
+      if (await pult.handlePultText(userId, s, msg.text)) return;
+
+      if (looksLikeNewObject(msg.text)) {
+        objectDialog.startObject(userId, s).catch(err => console.error('startObject error:', err));
+        return;
+      }
+
+      const pendingStep = await getActiveTextStepIntake(userId);
+      if (pendingStep?.step === 'details') {
+        handleDetailsAnswer(userId, pendingStep, msg.text).catch(err => console.error('handleDetailsAnswer error:', err));
+      } else if (pendingStep?.step === 'task') {
+        finalizePendingIntake(userId, pendingStep, msg.text).catch(err => console.error('finalizePendingIntake error:', err));
+      } else {
+        processTextUpdate(userId, msg.text).catch(err => console.error('processTextUpdate error:', err));
       }
       return;
     }
 
     const largest = msg.photo[msg.photo.length - 1];
-    const key = `${userId}:${msg.media_group_id || 'single-' + msg.message_id}`;
+    const objectDraftForPhotos = await objectDialog.getDraft(userId);
+    const toObject = objectDraftForPhotos && !objectIntake.isTerminal(objectDraftForPhotos.step);
+    const key = `${toObject ? 'obj' : 'cli'}:${userId}:${msg.media_group_id || 'single-' + msg.message_id}`;
     let entry = pendingBatches.get(key);
     if (!entry) {
       entry = { userId, timer: null, fileIds: [] };
       pendingBatches.set(key, entry);
     }
-    if (entry.fileIds.length < MAX_PHOTOS) entry.fileIds.push(largest.file_id);
-    scheduleFlush(key, userId);
+    if (entry.fileIds.length < photoCapFor(key)) entry.fileIds.push(largest.file_id);
+    scheduleFlush(key, userId, s);
   } catch (err) {
     console.error('Telegram webhook error:', err);
   }

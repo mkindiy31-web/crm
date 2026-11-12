@@ -1,5 +1,6 @@
 const express = require('express');
 const { pool } = require('../db');
+const siteSync = require('../siteSync');
 
 const router = express.Router();
 
@@ -55,6 +56,9 @@ router.post('/', async (req, res) => {
     [item.id, req.user.id, data, priceNum(item.price)]
   );
   res.status(201).json({ ...data, createdById: req.user.id });
+  // The site is told after the answer goes out: a slow or sleeping site must
+  // never hold up the save the manager just made.
+  siteSync.pushListing(item.id, data).catch(err => console.error('siteSync push failed:', err));
 });
 
 router.put('/:id', async (req, res) => {
@@ -68,6 +72,7 @@ router.put('/:id', async (req, res) => {
     [data, priceNum(item.price), req.params.id]
   );
   res.json({ ...data, createdById: rows[0].created_by });
+  siteSync.pushListing(req.params.id, data).catch(err => console.error('siteSync push failed:', err));
 });
 
 router.delete('/:id', async (req, res) => {

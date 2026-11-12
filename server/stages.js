@@ -3,15 +3,30 @@
 // stage names without duplicating the list inline everywhere. If the funnel
 // structure changes in crm.html, update this list to match.
 const STAGES = [
-  { id: 0, name: '1. Новий лід' },
-  { id: 1, name: '2. Зателефонувати' },
-  { id: 2, name: '3. Призначено консультацію' },
-  { id: 3, name: '4. Підбір' },
-  { id: 4, name: '5. Огляд' },
-  { id: 5, name: '6. Бронювання' },
-  { id: 6, name: '7. Угода' },
-  { id: 7, name: '8. Постійні інвестори' },
+  { id: 0, name: '1. Новий лід', prob: 5 },
+  { id: 1, name: '2. Зателефонувати', prob: 15 },
+  { id: 2, name: '3. Призначено консультацію', prob: 30 },
+  { id: 3, name: '4. Підбір', prob: 45 },
+  { id: 4, name: '5. Огляд', prob: 60 },
+  { id: 5, name: '6. Бронювання', prob: 80 },
+  { id: 6, name: '7. Угода', prob: 100 },
+  { id: 7, name: '8. Постійні інвестори', prob: null },
 ];
+
+// The closed/won stage, found by its prob:100 marker rather than a hardcoded
+// id — exactly as crm.html does it, so both sides shift together when a stage
+// is inserted, removed or reordered.
+const DEAL_STAGE_ID = STAGES.find(s => s.prob === 100)?.id ?? STAGES.length - 1;
+
+// The agency's cut: 1.3% of the middle of the client's budget range. Same
+// formula as calcCommission() in crm.html; a second, drifting copy of it would
+// show the manager one number in the bot and another in the CRM.
+function commissionOf(client) {
+  const min = parseFloat(client && client.budgetMin) || 0;
+  const max = parseFloat(client && client.budgetMax) || 0;
+  const budget = min > 0 && max > 0 ? (min + max) / 2 : (max || min);
+  return budget > 0 ? budget * 0.013 : 0;
+}
 
 // Looks up a stage by name as returned by the AI extraction. Tries, in order:
 // exact match (e.g. "4. Підбір"), a bare number (e.g. "4" or "4."), and a
@@ -36,9 +51,4 @@ function findStageIdByName(name) {
   return byBareName ? byBareName.id : null;
 }
 
-// The closed/won stage — found by name rather than a hardcoded id, same
-// reasoning as DEAL_STAGE_ID in crm.html (stage ids shift whenever a stage
-// is inserted/removed/reordered).
-const DEAL_STAGE_ID = STAGES.find(s => s.name.replace(/^\d+\.\s*/, '') === 'Угода')?.id ?? null;
-
-module.exports = { STAGES, findStageIdByName, DEAL_STAGE_ID };
+module.exports = { STAGES, DEAL_STAGE_ID, findStageIdByName, commissionOf };
