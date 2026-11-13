@@ -8,7 +8,7 @@
 
 const { pool } = require('./db');
 const { STAGES, DEAL_STAGE_ID, commissionOf } = require('./stages');
-const { addHistory, appendNote, stageLabel, dateUA, timeUA } = require('./cardFormat');
+const { addHistory, appendNote, stageLabel, dateUA, timeUA, objectStatusLabel } = require('./cardFormat');
 const siteSync = require('./siteSync');
 const { sendTelegramMessage, sendTelegramKeyboard, answerCallbackQuery, taskWord } = require('./telegram');
 
@@ -58,15 +58,15 @@ function objectLine(row, days = STALE_DAYS) {
     d.floor && (d.totalFloors ? `${d.floor}/${d.totalFloors}` : d.floor),
   ].filter(Boolean).join(', ');
   const stale = daysSince(row.updated_at);
-  const status = (d.status || 'available') !== 'available'
-    ? (d.status === 'sold' ? 'продано' : 'заброньовано')
-    : stale !== null && stale >= days ? `без руху ${stale} дн.` : 'у продажу';
+  const word = objectStatusLabel(d.status).toLowerCase();
+  const status = (d.status || 'available') === 'available' && stale !== null && stale >= days
+    ? `${word}, без руху ${stale} дн.` : word;
   return { head, specs, price: money(d.price, d.currency), status };
 }
 
 function objectsText(list) {
   if (!list.total) return 'Обʼєктів за тобою поки немає. Напиши «обʼєкт», щоб завести перший.';
-  const lines = [`У тебе ${list.total} ${forms(list.total, 'обʼєкт', 'обʼєкти', 'обʼєктів')}, ${list.forSale} у продажу.`, ''];
+  const lines = [`У тебе ${list.total} ${forms(list.total, 'обʼєкт', 'обʼєкти', 'обʼєктів')}, вільно ${list.forSale}.`, ''];
   for (const row of list.items.slice(0, SHOWN)) {
     const o = objectLine(row);
     lines.push(`<b>${esc(o.head)}</b>${o.specs ? '\n' + esc(o.specs) : ''}`);
@@ -375,12 +375,13 @@ async function handlePultCallback(userId, s, data, cqId) {
       return true;
     }
 
-    const next = action === 'off' ? 'sold' : 'available';
+    // «Зняти з продажу» це власник передумав, а не угода: окремий статус «Знято».
+    const next = action === 'off' ? 'withdrawn' : 'available';
     await saveObject(row, { ...d, status: next });
-    await ack(next === 'sold' ? 'Знято' : 'У продажу');
-    await sendTelegramMessage(s.token, s.chatId, next === 'sold'
-      ? 'Зняв з продажу. З вітрини сайту обʼєкт зник.'
-      : 'Повернув у продаж. На вітрині сайту знову є.');
+    await ack(objectStatusLabel(next));
+    await sendTelegramMessage(s.token, s.chatId, next === 'withdrawn'
+      ? 'Зняв з продажу, статус «Знято». З вітрини сайту обʼєкт зник.'
+      : 'Повернув у продаж, статус «Вільно». На вітрині сайту знову є.');
     return true;
   }
 

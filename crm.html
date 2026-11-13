@@ -848,6 +848,7 @@
           <option value="available">🟢 Вільно</option>
           <option value="reserved">🟠 Резерв</option>
           <option value="sold">🔴 Продано</option>
+          <option value="withdrawn">Знято</option>
         </select>
       </div>
     </div>
@@ -3456,6 +3457,7 @@ const CATALOG_STATUS = {
   available: { label: 'Вільно', color: '#308850' },
   reserved:  { label: 'Резерв', color: '#b08030' },
   sold:      { label: 'Продано', color: '#a84040' },
+  withdrawn: { label: 'Знято', color: '#b4b4bc' },
 };
 
 function setCatalogSort(value) {
@@ -3490,7 +3492,7 @@ function renderCatalogGrid() {
   const f = catalogFilters;
 
   let list = catalogCache.filter(o => {
-    if (!f.showSold && o.status === 'sold') return false;
+    if (!f.showSold && (o.status === 'sold' || o.status === 'withdrawn')) return false;
     if (f.status && o.status !== f.status) return false;
     if (f.propType && o.propType !== f.propType) return false;
     if (f.rooms && String(o.rooms || '') !== f.rooms) return false;
@@ -3535,7 +3537,7 @@ function renderCatalogGrid() {
         <option value="price_desc" ${catalogSort==='price_desc'?'selected':''}>Ціна: від дорожчих</option>
       </select>
       <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-m);cursor:pointer;white-space:nowrap;">
-        <input type="checkbox" ${f.showSold?'checked':''} onchange="toggleCatalogShowSold(this.checked)"> показати продані
+        <input type="checkbox" ${f.showSold?'checked':''} onchange="toggleCatalogShowSold(this.checked)"> показати продані і зняті
       </label>
       <button class="btn btn-primary" style="margin-left:auto;white-space:nowrap;" onclick="openCatalogModal()">➕ Додати обʼєкт</button>
     </div>`;

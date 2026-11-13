@@ -35,4 +35,10 @@ function appendNote(card, line) {
 // funnel number everywhere (list, card, button, confirmation).
 const stageLabel = stage => (stage && stage.name ? stage.name.replace(/^\d+\.\s*/, '') : '');
 
-module.exports = { isoKyiv, dateUA, timeUA, uid, addHistory, notesText, appendNote, stageLabel };
+// Object status words are the CRM's own (catalog badge and select). The bot
+// and the public object page use the same four, lower-cased mid-sentence.
+// 'withdrawn' is an owner taking the object off the market, not a sale.
+const OBJECT_STATUS = { available: 'Вільно', reserved: 'Резерв', sold: 'Продано', withdrawn: 'Знято' };
+const objectStatusLabel = status => OBJECT_STATUS[status] || OBJECT_STATUS.available;
+
+module.exports = { isoKyiv, dateUA, timeUA, uid, addHistory, notesText, appendNote, stageLabel, OBJECT_STATUS, objectStatusLabel };
