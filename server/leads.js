@@ -6,6 +6,7 @@
 
 const { pool } = require('./db');
 const { normalizePhone } = require('./phone');
+const { isoKyiv, dateUA, addHistory } = require('./cardFormat');
 const { sendTelegramMessage, sendTelegramKeyboard, answerCallbackQuery } = require('./telegram');
 
 function leadText(lead, dupes) {
@@ -94,19 +95,31 @@ async function claimLead(leadId, userId) {
 async function createCardFor(lead, userId) {
   const d = lead.data || {};
   const id = 'lead-' + lead.id;
-  const now = new Date().toISOString();
-  const card = {
+  const now = new Date();
+  const { rows: who } = await pool.query('SELECT display_name FROM users WHERE id = $1', [userId]);
+  // Поля й типи ті самі, що пише форма СРМ (crm.html, saveClient): що людина
+  // написала у формі, стоїть у «Запиті клієнта», обʼєкт і контакт у нотатках.
+  const extra = [
+    d.propertyTitle ? 'Дивилась: ' + d.propertyTitle : '',
+    d.contact && d.contact !== d.phone ? 'Контакт: ' + d.contact : '',
+  ].filter(Boolean);
+  const card = addHistory({
     id,
     name: d.name || d.phone || 'Заявка з сайту',
     phone: d.phone || '',
+    phone2: '',
     stage: 0,                  // 1. Новий лід
+    hot: false,
     source: 'сайт',
-    budget: d.budget || '',
-    need: d.message || d.propertyTitle || '',
-    createdAt: now,
+    clientRequest: String(d.message || '').trim(),
+    notes: extra.join('\n'),
+    date: dateUA(now),
+    dateISO: isoKyiv(now),
+    createdAt: now.toISOString(),
+    responsibleManagerName: (who[0] && who[0].display_name) || '',
     tasks: [],
-    notes: d.propertyTitle ? [{ at: now, text: 'Дивилась: ' + d.propertyTitle }] : [],
-  };
+    history: [],
+  }, 'created', 'Заявка з сайту' + (d.source ? ', форма «' + d.source + '»' : '') + ', взято в боті');
 
   await pool.query(
     `INSERT INTO clients (id, manager_id, data, phone_norm)

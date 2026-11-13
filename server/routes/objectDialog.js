@@ -37,7 +37,7 @@ const CHOICES = {
     { label: 'З ремонтом', n: 23 },
     { label: 'Без ремонту', n: 11 },
     { label: 'Будується', n: 9 },
-    { label: 'Частковий', n: 2 },
+    { label: 'Частковий', value: 'Частковий ремонт', n: 2 }, // термін сайту зветься повністю
   ],
 };
 
@@ -106,13 +106,30 @@ function navRow(step, extra = []) {
   return extra.concat([row]);
 }
 
-function choiceRows(step) {
+// Число на кнопці: скільки таких обʼєктів зараз у срм. Порядок і назви кнопок
+// з CHOICES (затверджений екран), числа живі, бо зашиті розходились із срм.
+const CHOICE_FIELD = { type: 'propType', purpose: 'purpose', district: 'district', condition: 'condition' };
+async function liveCounts(step) {
+  const field = CHOICE_FIELD[step];
+  if (!field) return null;
+  try {
+    const { rows } = await pool.query(
+      `SELECT data->>'${field}' v, count(*)::int n FROM catalog_items
+       WHERE archived_at IS NULL AND coalesce(data->>'status', 'available') = 'available'
+       GROUP BY 1`);
+    return new Map(rows.map(r => [r.v, r.n]));
+  } catch { return null; } // без чисел кнопки однаково працюють
+}
+
+async function choiceRows(step) {
   const all = CHOICES[step] || [];
   const list = step === 'district' ? all.slice(0, DISTRICTS_SHOWN) : all;
+  const live = await liveCounts(step);
+  const count = c => (live ? live.get(c.value || c.label) || 0 : c.n);
   const rows = [];
   for (let i = 0; i < list.length; i += 2) {
     rows.push(list.slice(i, i + 2).map((c, j) => ({
-      text: c.n > 0 ? `${c.label} · ${c.n}` : c.label,
+      text: count(c) > 0 ? `${c.label} · ${count(c)}` : c.label,
       callback_data: `o:p:${i + j}`,
     })));
   }
@@ -188,7 +205,7 @@ async function prompt(s, draft, prefix = '') {
 
   const text = prefix + stepLabel(step) + (QUESTION[step] || '');
   if (oi.BUTTON_STEPS.includes(step)) {
-    return sendTelegramKeyboard(s.token, s.chatId, text, navRow(step, choiceRows(step)));
+    return sendTelegramKeyboard(s.token, s.chatId, text, navRow(step, await choiceRows(step)));
   }
   if (step === 'owner') {
     return sendTelegramKeyboard(s.token, s.chatId, text,

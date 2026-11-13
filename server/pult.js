@@ -8,8 +8,9 @@
 
 const { pool } = require('./db');
 const { STAGES, DEAL_STAGE_ID, commissionOf } = require('./stages');
+const { addHistory, appendNote, stageLabel, dateUA, timeUA } = require('./cardFormat');
 const siteSync = require('./siteSync');
-const { sendTelegramMessage, sendTelegramKeyboard, answerCallbackQuery } = require('./telegram');
+const { sendTelegramMessage, sendTelegramKeyboard, answerCallbackQuery, taskWord } = require('./telegram');
 
 const SHOWN = 3;            // три позиції в списку, решта за «Показати всі N»
 // Строк живе в реєстрі автоматизацій: там його і міняють, тут лише значення
@@ -138,13 +139,16 @@ function nextTask(c, today) {
   if (!open.length) return null;
   open.sort((a, b) => String(a.date).localeCompare(String(b.date)));
   const t = open[0];
-  const when = t.date === today ? 'сьогодні' : t.date < today ? 'прострочено' : t.date;
-  return { type: t.type || 'Дія', when, overdue: t.date < today };
+  // Тип словом і дата «14.11», як у ранковому зведенні: ключ «call» і ISO-дату
+  // менеджер бачити не мав би.
+  const dm = String(t.date).split('-').reverse().slice(0, 2).join('.');
+  const when = (t.date === today ? 'сьогодні' : t.date < today ? 'прострочено' : dm) + (t.time ? ' о ' + t.time : '');
+  return { type: taskWord(t.type), when, overdue: t.date < today };
 }
 
 function clientLine(row, today) {
   const c = row.data || {};
-  const stage = STAGES[c.stage] ? STAGES[c.stage].name.replace(/^\d+\.\s*/, '') : '';
+  const stage = stageLabel(STAGES[c.stage]);
   const want = [c.clientRequest, (c.budgetMin || c.budgetMax) &&
     'до ' + money(c.budgetMax || c.budgetMin, 'USD')].filter(Boolean).join(', ');
   return { name: c.name || c.phone || 'Клієнт', want, stage, task: nextTask(c, today) };
@@ -187,7 +191,7 @@ function clientCardText(row, today) {
       .map(v => money(v, 'USD')).join(' - '));
   }
   const stage = STAGES[c.stage];
-  if (stage) lines.push('Етап: ' + stage.name.replace(/^\d+\.\s*/, ''));
+  if (stage) lines.push('Етап: ' + stageLabel(stage));
   if (c.source) lines.push('Джерело: ' + esc(c.source));
   const task = nextTask(c, today);
   if (task) lines.push(`${esc(task.type)}: ${task.when}`);
@@ -205,7 +209,7 @@ function clientCardRows(row) {
   const rows = [];
   const next = STAGES[c.stage + 1];
   if (next) {
-    rows.push([{ text: 'Далі по воронці: ' + next.name.replace(/^\d+\.\s*/, ''),
+    rows.push([{ text: 'Далі по воронці: ' + stageLabel(next),
       callback_data: `p:stage:${row.id}` }]);
   }
   rows.push([
@@ -392,18 +396,25 @@ async function handlePultCallback(userId, s, data, cqId) {
     if (action === 'stage') {
       const next = STAGES[c.stage + 1];
       if (!next) { await ack('Далі нікуди'); return true; }
-      const updated = { ...c, stage: c.stage + 1 };
+      // Як changeStageImmediate() у СРМ: запис в історії картки, а на «Угоді»
+      // відкриті завдання знімаються (onEnteredDealStage).
+      let updated = addHistory({ ...c, stage: c.stage + 1 }, 'stage_change',
+        `Етап: ${STAGES[c.stage]?.name} → ${next.name} (з бота)`);
+      if (next.id === DEAL_STAGE_ID && (updated.tasks || []).some(t => !t.done)) {
+        updated = addHistory({ ...updated, tasks: updated.tasks.filter(t => t.done) }, 'stage_change',
+          'Відкриті завдання знято, угоду закрито');
+      }
       await pool.query('UPDATE clients SET data = $1, updated_at = now() WHERE id = $2 AND manager_id = $3',
         [updated, id, userId]);
       await pool.query(
         `INSERT INTO events (manager_id, type, client_id, meta)
-         VALUES ($1, 'stage_change', $2, jsonb_build_object('to', $3::int))`,
-        [userId, id, c.stage + 1]);
-      await ack(next.name);
+         VALUES ($1, 'stage_change', $2, jsonb_build_object('fromStage', $3::int, 'toStage', $4::int))`,
+        [userId, id, c.stage, c.stage + 1]); // ключі ті самі, що в clientOps: їх читають зріз і статистика
+      await ack(stageLabel(next));
       const line = next.id === DEAL_STAGE_ID && commissionOf(updated) > 0
         ? `\nКомісія: ${money(Math.round(commissionOf(updated)), 'USD')}` : '';
       await sendTelegramMessage(s.token, s.chatId,
-        `${esc(c.name || 'Клієнт')} тепер на етапі «${next.name}».${line}`);
+        `${esc(c.name || 'Клієнт')} тепер на етапі «${stageLabel(next)}».${line}`);
       return true;
     }
 
@@ -467,10 +478,11 @@ async function handlePultText(userId, s, text) {
   const c = row.data || {};
 
   if (state.waiting === 'note') {
-    const notes = Array.isArray(c.notes) ? c.notes.slice() : [];
-    notes.push({ at: new Date().toISOString(), text: String(text).trim() });
+    // Нотатки в СРМ одне текстове поле; рядок з датою, як у AI-нотатках бота.
+    const updated = addHistory(appendNote(c, `[бот, ${dateUA()} ${timeUA()}]: ${String(text).trim()}`),
+      'notes_updated', 'Нотатки оновлено з бота');
     await pool.query('UPDATE clients SET data = $1, updated_at = now() WHERE id = $2 AND manager_id = $3',
-      [{ ...c, notes }, state.target, userId]);
+      [updated, state.target, userId]);
     await clearWaiting(userId);
     await sendTelegramMessage(s.token, s.chatId, 'Дописав у картку.');
     return true;
@@ -479,12 +491,16 @@ async function handlePultText(userId, s, text) {
   if (state.waiting === 'call') {
     const tasks = Array.isArray(c.tasks) ? c.tasks.slice() : [];
     const when = parseWhen(String(text));
-    tasks.push({ id: Date.now().toString(36), type: 'Дзвінок', date: when.date, time: when.time, done: false });
+    // Тип завдання ключем із TASK_TYPES у СРМ ('call'), а не підписом.
+    tasks.push({ id: Date.now().toString(36), type: 'call', date: when.date, time: when.time, done: false });
+    const [y, m, d] = when.date.split('-');
+    const updated = addHistory({ ...c, tasks }, 'task_added',
+      `Додано завдання: Призначено дзвінок, ${d}.${m}.${y}${when.time ? ' о ' + when.time : ''} (з бота)`);
     await pool.query('UPDATE clients SET data = $1, updated_at = now() WHERE id = $2 AND manager_id = $3',
-      [{ ...c, tasks }, state.target, userId]);
+      [updated, state.target, userId]);
     await clearWaiting(userId);
     await sendTelegramMessage(s.token, s.chatId,
-      `Поставив дзвінок на ${when.date}${when.time ? ' ' + when.time : ''}.`);
+      `Поставив дзвінок на ${d}.${m}${when.time ? ' о ' + when.time : ''}. Він уже в картці в срм.`);
     return true;
   }
 

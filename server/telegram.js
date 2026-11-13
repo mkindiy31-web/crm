@@ -504,6 +504,7 @@ module.exports = {
   getFilePath,
   downloadFileAsBase64,
   TASK_LABELS,
+  taskWord,
   addDaysISO,
   kyivTodayISO,
   kyivNowParts,

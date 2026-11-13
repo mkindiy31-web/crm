@@ -75,7 +75,7 @@ function applyChoice(data, step, choice) {
   } else if (step === 'purpose') {
     out.purpose = choice.label;
   } else if (step === 'condition') {
-    out.condition = choice.label;
+    out.condition = choice.value || choice.label;
   }
   return out;
 }

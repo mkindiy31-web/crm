@@ -6,6 +6,7 @@ const { upsertClientAndNotify } = require('../clientOps');
 const { sendTelegramMessage, sendTelegramKeyboard, answerCallbackQuery, getFilePath, downloadFileAsBase64, TASK_LABELS, addDaysISO, kyivTodayISO } = require('../telegram');
 const { extractBuyers, extractTextUpdate, extractPersonalTodo, extractClientTaskByName, extractNewClientFromText, extractBudgetAndNeed, extractTaskFromText } = require('../aiIntake');
 const { STAGES, DEAL_STAGE_ID } = require('../stages');
+const { stageLabel } = require('../cardFormat');
 const objectDialog = require('./objectDialog');
 const objectIntake = require('../objectIntake');
 const leads = require('../leads');
@@ -819,7 +820,7 @@ async function processClientTaskByName(userId, text) {
         const fromName = STAGES.find(st => st.id === c.stage)?.name || '?';
         c.stage = info.newStageId;
         c.history.unshift({ id: uid(), type: 'stage_change', text: `Етап: ${fromName} → ${info.newStageName}`, result: '', date: todayUA(), time: nowTimeUA() });
-        stageLine = `\n↪️ Етап: ${info.newStageName}`;
+        stageLine = `\n↪️ Етап: ${stageLabel(STAGES[info.newStageId]) || info.newStageName}`;
       }
 
       await upsertClientAndNotify(client, reqUser, c);
@@ -910,7 +911,7 @@ async function processTextUpdate(userId, text) {
         const fromName = STAGES.find(st => st.id === c.stage)?.name || '?';
         c.stage = info.newStageId;
         c.history.unshift({ id: uid(), type: 'stage_change', text: `Етап: ${fromName} → ${info.newStageName}`, result: '', date: todayUA(), time: nowTimeUA() });
-        stageLine = `\n↪️ Етап: ${info.newStageName}`;
+        stageLine = `\n↪️ Етап: ${stageLabel(STAGES[info.newStageId]) || info.newStageName}`;
       }
 
       await upsertClientAndNotify(client, reqUser, c);
