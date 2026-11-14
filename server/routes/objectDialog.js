@@ -8,6 +8,7 @@
 const { pool } = require('../db');
 const oi = require('../objectIntake');
 const { sendTelegramMessage, sendTelegramKeyboard, answerCallbackQuery } = require('../telegram');
+const { roomsLabel } = require('../cardFormat');
 
 // Counts come from the site's taxonomies (FIELDS.md, measured 2026-11-01).
 // They are shown on the buttons so the manager sees where listings actually
@@ -144,7 +145,7 @@ function summaryText(data) {
   const typeLine = [data.propType, data.purpose && data.purpose.toLowerCase()].filter(Boolean).join(', ');
   if (typeLine) lines.push(`<b>Тип</b> ${typeLine}`);
   if (data.district) lines.push(`<b>Район</b> ${data.district}`);
-  const size = [data.area && `${data.area} м²`, data.rooms && `${data.rooms} кімнати`].filter(Boolean).join(', ');
+  const size = [data.area && `${data.area} м²`, data.rooms && roomsLabel(data.rooms)].filter(Boolean).join(', ');
   if (size) lines.push(`<b>Площа</b> ${size}`);
   if (data.floor) lines.push(`<b>Поверх</b> ${data.floor}${data.totalFloors ? ' з ' + data.totalFloors : ''}`);
   if (data.condition) lines.push(`<b>Стан</b> ${data.condition}`);

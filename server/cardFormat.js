@@ -41,4 +41,13 @@ const stageLabel = stage => (stage && stage.name ? stage.name.replace(/^\d+\.\s*
 const OBJECT_STATUS = { available: 'Вільно', reserved: 'Резерв', sold: 'Продано', withdrawn: 'Знято' };
 const objectStatusLabel = status => OBJECT_STATUS[status] || OBJECT_STATUS.available;
 
-module.exports = { isoKyiv, dateUA, timeUA, uid, addHistory, notesText, appendNote, stageLabel, OBJECT_STATUS, objectStatusLabel };
+// «1 кімната», «2 кімнати», «5 кімнат», «21 кімната»; не число лишається як є.
+function roomsLabel(rooms) {
+  const s = String(rooms == null ? '' : rooms).trim();
+  if (!/^\d+$/.test(s)) return s + ' кімнати';
+  const n = Number(s), d = n % 10, dd = n % 100;
+  const word = d === 1 && dd !== 11 ? 'кімната' : d >= 2 && d <= 4 && (dd < 12 || dd > 14) ? 'кімнати' : 'кімнат';
+  return `${n} ${word}`;
+}
+
+module.exports = { isoKyiv, dateUA, timeUA, uid, addHistory, notesText, appendNote, stageLabel, OBJECT_STATUS, objectStatusLabel, roomsLabel };

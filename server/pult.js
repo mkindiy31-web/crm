@@ -8,7 +8,7 @@
 
 const { pool } = require('./db');
 const { STAGES, DEAL_STAGE_ID, commissionOf } = require('./stages');
-const { addHistory, appendNote, stageLabel, dateUA, timeUA, objectStatusLabel } = require('./cardFormat');
+const { addHistory, appendNote, stageLabel, dateUA, timeUA, objectStatusLabel, roomsLabel } = require('./cardFormat');
 const siteSync = require('./siteSync');
 const { sendTelegramMessage, sendTelegramKeyboard, answerCallbackQuery, taskWord, crmLink } = require('./telegram');
 
@@ -54,7 +54,7 @@ function objectLine(row, days = STALE_DAYS) {
   const head = [d.propType, d.district].filter(Boolean).join(', ') || d.title || 'Обʼєкт';
   const specs = [
     d.area && d.area + ' м²',
-    d.rooms && d.rooms + ' кімнати',
+    d.rooms && roomsLabel(d.rooms),
     d.floor && (d.totalFloors ? `${d.floor}/${d.totalFloors}` : d.floor),
   ].filter(Boolean).join(', ');
   const stale = daysSince(row.updated_at);

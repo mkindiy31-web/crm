@@ -12,6 +12,7 @@ const { pool } = require('../db');
 const { sendTelegramMessage, sendTelegramKeyboard, getFilePath, downloadFileAsBase64 } = require('../telegram');
 const { dropDraft, saveDraft } = require('./objectDialog');
 const siteSync = require('../siteSync');
+const { roomsLabel } = require('../cardFormat');
 
 function priceNum(price) {
   const n = parseFloat(String(price ?? '').replace(/[^\d.]/g, ''));
@@ -22,7 +23,7 @@ function priceNum(price) {
 function buildTitle(data) {
   const bits = [
     data.propType,
-    data.rooms && `${data.rooms} кімнати`,
+    data.rooms && roomsLabel(data.rooms),
     data.area && `${data.area} м²`,
     data.district,
   ].filter(Boolean);
