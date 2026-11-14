@@ -129,8 +129,22 @@ async function setWebhook(token, url, secretToken) {
 // to allowed_updates (like adding callback_query above) reaches already
 // configured bots without each manager having to re-save their Telegram
 // settings by hand. Cheap and idempotent — safe to run on every boot.
-async function reRegisterAllWebhooks(pool) {
+function publicBase() {
   const base = process.env.PUBLIC_BASE_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '');
+  return base.replace(/\/+$/, '');
+}
+
+// Посилання, що відкриває срм одразу на картці: `kliient` чи `obyekt`.
+// Лише https: Telegram відкидає все повідомлення, якщо адреса кнопки інша
+// (localhost, http), тому без такої адреси кнопки просто немає.
+function crmLink(kind, id) {
+  const base = publicBase();
+  if (!/^https:\/\//.test(base) || !id) return '';
+  return `${base}/crm.html#${kind}=${encodeURIComponent(id)}`;
+}
+
+async function reRegisterAllWebhooks(pool) {
+  const base = publicBase();
   if (!base) return;
   const { rows: users } = await pool.query(
     `SELECT id, tg_settings FROM users
@@ -491,6 +505,8 @@ async function checkAndSendClientTaskDigest(pool) {
 }
 
 module.exports = {
+  publicBase,
+  crmLink,
   sendTelegramDocument,
   sendTelegramMessage,
   sendTelegramKeyboard,

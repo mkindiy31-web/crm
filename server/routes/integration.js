@@ -103,6 +103,7 @@ router.post('/lead', async (req, res) => {
     source: String(f.source || '').trim(),
     propertyTitle: String(f.property_title || '').trim(),
     propertyId: f.property_id ? Number(f.property_id) : null,
+    propertyUrl: /^https?:\/\//.test(String(f.property_url || '')) ? String(f.property_url).trim() : '',
     at: new Date().toISOString(),
   };
 

@@ -87,15 +87,32 @@ async function enqueue(crmId, payload, error) {
   );
 }
 
-async function rememberSiteId(crmId, postId) {
+// Адреса сторінки зберігається лише в опублікованого: чернетка має службову
+// адресу, що веде в нікуди. Знятий обʼєкт лишає стару, бот і срм її тоді не
+// показують, бо дивляться на статус.
+async function rememberSiteId(crmId, postId, res = {}) {
   if (!postId) return;
+  const url = res.status === 'publish' && /^https?:\/\//.test(res.url || '') ? res.url : '';
   await pool.query(
     `UPDATE catalog_items
-     SET data = data || jsonb_build_object('siteId', $2::int, 'siteStatus', 'live'),
+     SET data = data || jsonb_build_object('siteId', $2::int, 'siteStatus', 'live')
+                     || CASE WHEN $3 = '' THEN '{}'::jsonb ELSE jsonb_build_object('siteUrl', $3::text) END,
          updated_at = now()
      WHERE id = $1`,
-    [crmId, postId]
+    [crmId, postId, url]
   );
+}
+
+// Куди вести людину на сайті: адреса сторінки, а якщо її ще не записано,
+// короткий `?p=<номер>`, який WordPress переводить на ту саму сторінку (301).
+// Нічого, поки обʼєкт не на сайті або не «Вільно».
+function siteLinkOf(crmId, data) {
+  const d = data || {};
+  if ((d.status || 'available') !== 'available') return '';
+  if (/^https?:\/\//.test(d.siteUrl || '')) return d.siteUrl;
+  const id = siteIdOf(crmId, d);
+  if (!id || !process.env.SITE_URL) return '';
+  return String(process.env.SITE_URL).replace(/\/+$/, '') + '/?p=' + id;
 }
 
 // Called right after a listing changes in the CRM. Never throws: a site that is
@@ -156,7 +173,7 @@ async function pushListing(crmId, data) {
   if (!siteConfigured()) return { ok: false, skipped: true };
   const { res, payload } = await sendListing(crmId, data);
   if (res.ok) {
-    await rememberSiteId(crmId, res.postId);
+    await rememberSiteId(crmId, res.postId, res);
     return res;
   }
   if (res.permanent) {
@@ -184,7 +201,7 @@ async function drain(limit = 20) {
       : await postToSite(row.payload);
     if (res.ok) {
       await pool.query("UPDATE site_queue SET status = 'sent', last_error = NULL WHERE id = $1", [row.id]);
-      await rememberSiteId(row.crm_id, res.postId);
+      await rememberSiteId(row.crm_id, res.postId, res);
       sent++;
       continue;
     }
@@ -206,4 +223,4 @@ async function drain(limit = 20) {
   return { sent, pending, failed };
 }
 
-module.exports = { pushListing, drain, toSitePayload, siteIdOf, siteConfigured, syncPhotos, isDataPhoto, BACKOFF };
+module.exports = { pushListing, drain, toSitePayload, siteIdOf, siteLinkOf, siteConfigured, syncPhotos, isDataPhoto, BACKOFF };

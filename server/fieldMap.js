@@ -18,6 +18,8 @@ const SCALARS = {
   floor: 'floor',
   floor_all: 'totalFloors',
   phone: 'ownerPhone',
+  // Адреса сторінки, лише в опублікованого (міст сайту, urban_crm_collect).
+  permalink: 'siteUrl',
 };
 
 // taxonomy on the site -> CRM key

@@ -10,7 +10,7 @@ const { pool } = require('./db');
 const { STAGES, DEAL_STAGE_ID, commissionOf } = require('./stages');
 const { addHistory, appendNote, stageLabel, dateUA, timeUA, objectStatusLabel } = require('./cardFormat');
 const siteSync = require('./siteSync');
-const { sendTelegramMessage, sendTelegramKeyboard, answerCallbackQuery, taskWord } = require('./telegram');
+const { sendTelegramMessage, sendTelegramKeyboard, answerCallbackQuery, taskWord, crmLink } = require('./telegram');
 
 const SHOWN = 3;            // три позиції в списку, решта за «Показати всі N»
 // Строк живе в реєстрі автоматизацій: там його і міняють, тут лише значення
@@ -100,9 +100,8 @@ function objectCardText(row) {
   lines.push(`${o.price}, ${o.status}`);
   const age = daysSince(row.created_at);
   if (age !== null) lines.push(`У срм ${age} дн.`);
-  // Обʼєкт із сайту несе sitePostId, створений у СРМ дістає siteId від сайту.
-  if (d.siteId || d.sitePostId) lines.push('На сайті так');
-  else if (d.siteStatus === 'pending') lines.push('На сайт ще не пішов');
+  // Що обʼєкт на сайті, тепер каже кнопка «На сайті» під карткою.
+  if (!(d.siteId || d.sitePostId) && d.siteStatus === 'pending') lines.push('На сайт ще не пішов');
   const photos = (d.photos || []).length;
   if (photos) lines.push(`Фото ${photos}`);
   return lines.join('\n');
@@ -111,13 +110,22 @@ function objectCardText(row) {
 function objectCardRows(row) {
   const d = row.data || {};
   const onSale = (d.status || 'available') === 'available';
-  return [
+  const rows = [
     [{ text: 'Змінити ціну', callback_data: `p:price:${row.id}` },
      onSale
        ? { text: 'Зняти з продажу', callback_data: `p:off:${row.id}` }
        : { text: 'Повернути в продаж', callback_data: `p:on:${row.id}` }],
-    [{ text: 'Назад до списку', callback_data: 'p:o' }],
   ];
+  // Дороги з картки: сторінка на сайті (лише в опублікованого і «Вільно») і
+  // та сама картка в срм.
+  const links = [];
+  const site = siteSync.siteLinkOf(row.id, d);
+  if (/^https:\/\//.test(site)) links.push({ text: 'На сайті', url: site });
+  const crm = crmLink('obyekt', row.id);
+  if (crm) links.push({ text: 'У срм', url: crm });
+  if (links.length) rows.push(links);
+  rows.push([{ text: 'Назад до списку', callback_data: 'p:o' }]);
+  return rows;
 }
 
 // ── clients ─────────────────────────────────────────────────────────────────
@@ -216,10 +224,15 @@ function clientCardRows(row) {
     { text: 'Поставити дзвінок', callback_data: `p:call:${row.id}` },
     { text: 'Дописати нотатку', callback_data: `p:note:${row.id}` },
   ]);
-  rows.push([
-    { text: 'Підібрати обʼєкт', callback_data: `p:match:${row.id}` },
-    { text: 'Назад до списку', callback_data: 'p:c' },
-  ]);
+  const match = { text: 'Підібрати обʼєкт', callback_data: `p:match:${row.id}` };
+  const back = { text: 'Назад до списку', callback_data: 'p:c' };
+  const crm = crmLink('kliient', row.id);
+  if (crm) {
+    rows.push([match, { text: 'У срм', url: crm }]);
+    rows.push([back]);
+  } else {
+    rows.push([match, back]);
+  }
   return rows;
 }
 

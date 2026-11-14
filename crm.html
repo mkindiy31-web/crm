@@ -2104,6 +2104,21 @@ function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+// Опис обʼєкта з сайту це HTML (абзаци, переноси, списки). Для показу і форми
+// він стає звичайним текстом з тими самими абзацами; у базі лишається як є,
+// бо срм шле його назад на сайт.
+function descText(html) {
+  const s = String(html || '');
+  if (!/<[a-z\/][^>]*>|&[a-z#0-9]+;/i.test(s)) return s;
+  const marked = s
+    .replace(/\r\n?/g, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<li[^>]*>/gi, '• ')
+    .replace(/<\/(li|p|div|h[1-6])>/gi, '\n\n');
+  const text = new DOMParser().parseFromString(marked, 'text/html').documentElement.textContent || '';
+  return text.split('\n').map(l => l.trim()).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 // ═══════════════════════════════════════════
 // MODAL
 // ═══════════════════════════════════════════
@@ -3650,7 +3665,7 @@ function renderCatalogDetail() {
         ${specs.map(s => `<div><div style="font-size:9px;color:var(--text-m);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px;">${escHtml(s.l)}</div><div style="font-size:14px;font-weight:700;color:var(--text);">${escHtml(s.v)}</div></div>`).join('')}
       </div>` : ''}
 
-      ${o.description ? `<div style="font-size:13px;line-height:1.7;color:var(--text-s);white-space:pre-wrap;margin-bottom:20px;">${escHtml(o.description)}</div>` : ''}
+      ${o.description ? `<div style="font-size:13px;line-height:1.7;color:var(--text-s);white-space:pre-wrap;margin-bottom:20px;">${escHtml(descText(o.description))}</div>` : ''}
 
       ${o.ownerName || o.ownerPhone ? `<div style="font-size:12px;color:var(--text-m);margin-bottom:14px;padding:12px 14px;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;">
         <b style="color:var(--text-s);">Власник (внутрішня інфо):</b> ${escHtml(o.ownerName || '')} ${o.ownerPhone ? '· 📞 ' + escHtml(o.ownerPhone) : ''}
@@ -3664,6 +3679,7 @@ function renderCatalogDetail() {
 
       <div style="display:flex;flex-wrap:wrap;gap:10px;">
         <button class="btn btn-primary" onclick="shareCatalogItem('${o.id}')">🔗 Поділитися посиланням</button>
+        ${/^https?:\/\//.test(o.siteLink || '') ? `<a class="btn btn-ghost" style="text-decoration:none;" href="${escHtml(o.siteLink).replace(/"/g, '&quot;')}" target="_blank" rel="noopener">Відкрити на сайті ↗</a>` : ''}
         ${editable ? `
           <button class="btn btn-ghost" onclick="openCatalogModal('${o.id}')">✏️ Редагувати</button>
           <button class="btn btn-ghost" style="color:#c05050;border-color:rgba(160,40,40,0.4);" onclick="deleteCatalogItem('${o.id}')">🗑️ Видалити</button>
@@ -3713,7 +3729,8 @@ function openCatalogModal(id) {
   document.getElementById('cat-address').value = o?.address || '';
   document.getElementById('cat-owner-name').value = o?.ownerName || '';
   document.getElementById('cat-owner-phone').value = o?.ownerPhone || '';
-  document.getElementById('cat-description').value = o?.description || '';
+  _catalogDescOriginal = o?.description || '';
+  document.getElementById('cat-description').value = descText(_catalogDescOriginal);
 
   renderCatalogPhotosList();
   _catalogModalOpen = true;
@@ -3765,6 +3782,12 @@ function catalogPhotoFiles(files) {
   });
 }
 
+// Незмінений опис іде назад як був, з абзацами для сайту; змінений іде текстом.
+let _catalogDescOriginal = '';
+function descForSave(text) {
+  return _catalogDescOriginal && text === descText(_catalogDescOriginal) ? _catalogDescOriginal : text;
+}
+
 async function saveCatalogItem() {
   const title = document.getElementById('cat-title').value.trim();
   const address = document.getElementById('cat-address').value.trim();
@@ -3787,7 +3810,7 @@ async function saveCatalogItem() {
     address,
     ownerName: document.getElementById('cat-owner-name').value.trim(),
     ownerPhone: document.getElementById('cat-owner-phone').value.trim(),
-    description: document.getElementById('cat-description').value.trim(),
+    description: descForSave(document.getElementById('cat-description').value.trim()),
     photos: _catalogPhotos,
   };
 
@@ -5834,6 +5857,7 @@ async function boot() {
     updateTodosBadge();
     loadManagerViewsList();
     if (typeof renderOwnersBoard === 'function') renderOwnersBoard();
+    openFromHash();
   } catch (err) {
     console.error('Не вдалося завантажити CRM:', err);
     showLoginOverlay('Немає з’єднання з сервером. Оновіть сторінку.');
@@ -5872,6 +5896,26 @@ async function logout() {
   renderAll();
   showLoginOverlay();
 }
+
+// Посилання з бота відкриває одразу потрібну картку: `#obyekt=<id>` чи
+// `#kliient=<id>`. Без входу адреса чекає, і картка відкривається після нього.
+function openFromHash() {
+  const m = /^#(obyekt|kliient)=(.+)$/.exec(location.hash || '');
+  if (!m || !currentUser) return;
+  const id = decodeURIComponent(m[2]);
+  history.replaceState(null, '', location.pathname + location.search);
+  if (m[1] === 'obyekt') {
+    document.querySelectorAll('.sidebar-item').forEach(e =>
+      e.classList.toggle('active', /showView\('catalog'/.test(e.getAttribute('onclick') || '')));
+    document.getElementById('page-title').textContent = '📸 Каталог обʼєктів';
+    openCatalogDetail(id);
+  } else if (clients.some(c => c.id === id)) {
+    openClientDrawer(id);
+  } else {
+    toast('Цієї картки немає серед твоїх клієнтів', 5000);
+  }
+}
+window.addEventListener('hashchange', openFromHash);
 
 boot();
 

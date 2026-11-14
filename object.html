@@ -83,6 +83,19 @@ const STATUS_META = {
   withdrawn: { label: 'Знято', color: '#b4b4bc' },
 };
 
+// Опис з сайту це HTML; тут він стає текстом з тими самими абзацами.
+function descText(html) {
+  const s = String(html || '');
+  if (!/<[a-z\/][^>]*>|&[a-z#0-9]+;/i.test(s)) return s;
+  const marked = s
+    .replace(/\r\n?/g, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<li[^>]*>/gi, '• ')
+    .replace(/<\/(li|p|div|h[1-6])>/gi, '\n\n');
+  const text = new DOMParser().parseFromString(marked, 'text/html').documentElement.textContent || '';
+  return text.split('\n').map(l => l.trim()).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function escHtml(s) {
   return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
@@ -151,7 +164,7 @@ async function load() {
       ${specs.map(s => `<div class="spec-item"><div class="label">${escHtml(s.label)}</div><div class="value">${escHtml(s.value)}</div></div>`).join('')}
     </div>` : ''}
 
-    ${o.description ? `<div class="description">${escHtml(o.description)}</div>` : ''}
+    ${o.description ? `<div class="description">${escHtml(descText(o.description))}</div>` : ''}
 
     ${o.managerName ? `
       <div class="contact-card">

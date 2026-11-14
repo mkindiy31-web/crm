@@ -7,20 +7,38 @@
 const { pool } = require('./db');
 const { normalizePhone } = require('./phone');
 const { isoKyiv, dateUA, addHistory } = require('./cardFormat');
-const { sendTelegramMessage, sendTelegramKeyboard, answerCallbackQuery } = require('./telegram');
+const { sendTelegramMessage, sendTelegramKeyboard, answerCallbackQuery, crmLink } = require('./telegram');
+
+// Текст іде в Telegram з parse_mode HTML: «<» чи «&» з форми без екранування
+// ламали б усе повідомлення, і заявка до менеджерів не доходила б.
+function esc(text) {
+  return String(text == null ? '' : text)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// Сторінка обʼєкта, з якої прийшла заявка: адреса від сайту, а без неї
+// короткий `?p=<номер>`, який WordPress переводить на ту саму сторінку.
+function propertyLink(d) {
+  if (/^https:\/\//.test(d.propertyUrl || '')) return d.propertyUrl;
+  const base = String(process.env.SITE_URL || '').replace(/\/+$/, '');
+  return d.propertyId && /^https:\/\//.test(base) ? `${base}/?p=${d.propertyId}` : '';
+}
 
 function leadText(lead, dupes) {
   const d = lead.data || {};
   const lines = ['<b>Нова заявка з сайту</b>'];
-  if (d.name) lines.push(d.name + (d.phone ? ', ' + d.phone : ''));
-  else if (d.phone) lines.push(d.phone);
-  if (d.contact && d.contact !== d.phone) lines.push(d.contact);
-  if (d.propertyTitle) lines.push('Дивилась: ' + d.propertyTitle);
-  if (d.message) lines.push(d.message);
-  if (d.source) lines.push('Форма: ' + d.source);
+  if (d.name) lines.push(esc(d.name) + (d.phone ? ', ' + esc(d.phone) : ''));
+  else if (d.phone) lines.push(esc(d.phone));
+  if (d.contact && d.contact !== d.phone) lines.push(esc(d.contact));
+  if (d.propertyTitle) {
+    const link = propertyLink(d);
+    lines.push('Дивилась: ' + (link ? `<a href="${esc(link)}">${esc(d.propertyTitle)}</a>` : esc(d.propertyTitle)));
+  }
+  if (d.message) lines.push(esc(d.message));
+  if (d.source) lines.push('Форма: ' + esc(d.source));
 
   if (dupes && dupes.length) {
-    const who = dupes.map(x => x.display_name).join(', ');
+    const who = dupes.map(x => esc(x.display_name)).join(', ');
     lines.push('', `Цей номер уже веде ${who}.`);
   }
   lines.push('', 'Ще нічия.');
@@ -173,13 +191,15 @@ async function handleLeadCallback(userId, s, data, cqId) {
 
   const card = await createCardFor(lead, userId);
   await ack('Твоя');
-  await sendTelegramMessage(s.token, s.chatId,
-    `Твоя. Картка в срм на етапі «1. Новий лід», джерело «сайт».\nРешті написав, що заявку взяв ти.`);
+  const text = 'Твоя. Картка в срм на етапі «Новий лід», джерело «сайт».\nРешті написав, що заявку взяв ти.';
+  const crm = crmLink('kliient', card.id);
+  if (crm) await sendTelegramKeyboard(s.token, s.chatId, text, [[{ text: 'Відкрити картку в срм', url: crm }]]);
+  else await sendTelegramMessage(s.token, s.chatId, text);
   await tellOthers(lead, userId, takerName);
   return true;
 }
 
 module.exports = {
-  leadText, leadRows, broadcast, claimLead, createCardFor,
+  leadText, leadRows, propertyLink, broadcast, claimLead, createCardFor,
   whoHasPhone, managersWithBot, handleLeadCallback,
 };

@@ -18,6 +18,8 @@ function priceNum(price) {
 function toItem(row) {
   return {
     ...row.data,
+    // Куди веде «Відкрити на сайті»; порожньо, поки обʼєкт не на сайті чи не «Вільно».
+    siteLink: siteSync.siteLinkOf(row.data.id, row.data),
     createdById: row.created_by,
     createdByName: row.created_by_name || row.data.createdByName || '',
     createdByPhone: row.created_by_phone || '',
@@ -65,8 +67,12 @@ router.put('/:id', async (req, res) => {
   const { rows } = await pool.query('SELECT data, created_by FROM catalog_items WHERE id = $1', [req.params.id]);
   if (!rows.length) return res.status(404).json({ error: "Об'єкт не знайдено" });
 
-  const item = req.body || {};
-  const data = { ...item, id: req.params.id, createdByName: rows[0].data.createdByName };
+  const item = { ...(req.body || {}) };
+  delete item.siteLink;
+  // Форма шле лише свої поля. Решта (номер і адреса на сайті, вкладення фото,
+  // стан і призначення з бота) лишається: без неї правка в срм створювала на
+  // сайті новий запис замість оновити наявний.
+  const data = { ...rows[0].data, ...item, id: req.params.id, createdByName: rows[0].data.createdByName };
   await pool.query(
     `UPDATE catalog_items SET data = $1, price_num = $2, updated_at = now() WHERE id = $3`,
     [data, priceNum(item.price), req.params.id]
