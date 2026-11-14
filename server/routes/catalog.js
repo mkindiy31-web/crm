@@ -70,7 +70,7 @@ router.put('/:id', async (req, res) => {
   const item = { ...(req.body || {}) };
   delete item.siteLink;
   // Форма шле лише свої поля. Решта (номер і адреса на сайті, вкладення фото,
-  // стан і призначення з бота) лишається: без неї правка в срм створювала на
+  // стан і призначення з бота) лишається: без неї зміна в срм створювала на
   // сайті новий запис замість оновити наявний.
   const data = { ...rows[0].data, ...item, id: req.params.id, createdByName: rows[0].data.createdByName };
   await pool.query(
