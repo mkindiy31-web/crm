@@ -6,7 +6,8 @@
 
 const { pool } = require('./db');
 const { normalizePhone } = require('./phone');
-const { isoKyiv, dateUA, addHistory } = require('./cardFormat');
+const { isoKyiv, dateUA, timeUA, addHistory, appendNote, stageLabel } = require('./cardFormat');
+const { STAGES } = require('./stages');
 const { sendTelegramMessage, sendTelegramKeyboard, answerCallbackQuery, crmLink } = require('./telegram');
 
 // Текст іде в Telegram з parse_mode HTML: «<» чи «&» з форми без екранування
@@ -154,6 +155,38 @@ async function createCardFor(lead, userId) {
   return card;
 }
 
+// Номер уже в картці того, хто взяв заявку: друга картка не створюється, заявка
+// дописується в наявну, етап лишається (обіцянка етапу 4, затверджено 15.11.2026).
+// Картки інших менеджерів не чіпаються: один номер у кількох менеджерів дозволено.
+async function ownCardByPhone(phoneNorm, userId) {
+  if (!phoneNorm) return null;
+  const { rows } = await pool.query(
+    `SELECT id, data FROM clients
+     WHERE manager_id = $1 AND archived_at IS NULL AND (phone_norm = $2 OR phone2_norm = $2)
+     ORDER BY updated_at DESC LIMIT 1`,
+    [userId, phoneNorm]
+  );
+  return rows[0] || null;
+}
+
+async function mergeIntoCard(lead, userId, row) {
+  const d = lead.data || {};
+  const now = new Date();
+  const bits = [
+    String(d.message || '').trim(),
+    d.propertyTitle ? 'Дивилась: ' + d.propertyTitle : '',
+    d.contact && d.contact !== d.phone ? 'Контакт: ' + d.contact : '',
+  ].filter(Boolean);
+  let card = row.data || {};
+  if (bits.length) card = appendNote(card, `[заявка з сайту, ${dateUA(now)} ${timeUA(now)}]: ${bits.join('; ')}`);
+  card = addHistory(card, 'info_updated',
+    'Повторна заявка з сайту' + (d.source ? ', форма «' + d.source + '»' : '') + ', взято в боті');
+  await pool.query('UPDATE clients SET data = $1, updated_at = now() WHERE id = $2 AND manager_id = $3',
+    [card, row.id, userId]);
+  await pool.query('UPDATE site_leads SET client_id = $2 WHERE id = $1', [lead.id, row.id]);
+  return { id: row.id, ...card };
+}
+
 // Tells everyone else that the request is taken, so nobody calls twice.
 async function tellOthers(lead, takerId, takerName) {
   const managers = await managersWithBot();
@@ -189,9 +222,13 @@ async function handleLeadCallback(userId, s, data, cqId) {
   const { rows } = await pool.query('SELECT display_name FROM users WHERE id = $1', [userId]);
   const takerName = rows[0] ? rows[0].display_name : 'менеджер';
 
-  const card = await createCardFor(lead, userId);
+  const own = await ownCardByPhone(lead.phone_norm || normalizePhone((lead.data || {}).phone), userId);
+  const card = own ? await mergeIntoCard(lead, userId, own) : await createCardFor(lead, userId);
   await ack('Твоя');
-  const text = 'Твоя. Картка в срм на етапі «Новий лід», джерело «сайт».\nРешті написав, що заявку взяв ти.';
+  const text = own
+    ? `Цей номер уже у твоїй картці «${esc(card.name || 'без імені')}», етап «${stageLabel(STAGES[card.stage]) || 'Новий лід'}». ` +
+      'Дописав туди нову заявку, другої картки немає.\nРешті написав, що заявку взяв ти.'
+    : 'Твоя. Картка в срм на етапі «Новий лід», джерело «сайт».\nРешті написав, що заявку взяв ти.';
   const crm = crmLink('kliient', card.id);
   if (crm) await sendTelegramKeyboard(s.token, s.chatId, text, [[{ text: 'Відкрити картку в срм', url: crm }]]);
   else await sendTelegramMessage(s.token, s.chatId, text);
@@ -200,6 +237,6 @@ async function handleLeadCallback(userId, s, data, cqId) {
 }
 
 module.exports = {
-  leadText, leadRows, propertyLink, broadcast, claimLead, createCardFor,
+  leadText, leadRows, propertyLink, broadcast, claimLead, createCardFor, ownCardByPhone, mergeIntoCard,
   whoHasPhone, managersWithBot, handleLeadCallback,
 };
