@@ -105,10 +105,18 @@ function objectCardText(row) {
   const age = daysSince(row.created_at);
   if (age !== null) lines.push(`У срм ${age} дн.`);
   // Що обʼєкт на сайті, тепер каже кнопка «На сайті» під карткою.
-  if (!(d.siteId || d.sitePostId) && d.siteStatus === 'pending') lines.push('На сайт ще не пішов');
   const photos = (d.photos || []).length;
+  if (needsPhotos(row)) lines.push('Без фото, на сайті поки немає');
+  else if (!(d.siteId || d.sitePostId) && d.siteStatus === 'pending') lines.push('На сайт ще не пішов');
   if (photos) lines.push(`Фото ${photos}`);
   return lines.join('\n');
+}
+
+// Обʼєкт без жодного фото, якого ще немає на сайті: картка пропонує «Додати фото».
+// Більше фото до обʼєкта, що вже має фото, додається в срм (екран 15.11.2026).
+function needsPhotos(row) {
+  const d = row.data || {};
+  return !(d.photos || []).length && !siteSync.siteIdOf(row.id, d);
 }
 
 function objectCardRows(row) {
@@ -123,6 +131,7 @@ function objectCardRows(row) {
   // Дороги з картки: сторінка на сайті (лише в опублікованого і «Вільно») і
   // та сама картка в срм.
   const links = [];
+  if (needsPhotos(row)) links.push({ text: 'Додати фото', callback_data: `p:ph:${row.id}` });
   const site = siteSync.siteLinkOf(row.id, d);
   if (/^https:\/\//.test(site)) links.push({ text: 'На сайті', url: site });
   const crm = crmLink('obyekt', row.id);
@@ -370,6 +379,25 @@ async function handlePultCallback(userId, s, data, cqId) {
 
   if (action === 'close') { await ack(); await clearWaiting(userId); return true; }
 
+  if (action === 'ph') {
+    const row = await objectCard(id);
+    const deny = await mayTouchObject(userId, role, row);
+    if (deny) { await ack(deny); await sendTelegramMessage(s.token, s.chatId, deny); return true; }
+    await ack();
+    await setWaiting(userId, 'photos', id);
+    await sendTelegramKeyboard(s.token, s.chatId, 'Кидай фото, скільки є. Перше стане головним.',
+      [[{ text: 'Скасувати', callback_data: `p:ph-x:${id}` }]]);
+    return true;
+  }
+
+  if (action === 'ph-x') {
+    await ack();
+    await clearWaiting(userId);
+    const row = await objectCard(id);
+    if (row) await sendTelegramKeyboard(s.token, s.chatId, objectCardText(row), objectCardRows(row));
+    return true;
+  }
+
   if (action === 'o') {
     const row = await objectCard(id);
     if (!row) {
@@ -495,10 +523,75 @@ async function handlePultCallback(userId, s, data, cqId) {
 
 // Text that answers a question the panel asked. Returns false when the bot was
 // not waiting for anything, so the caller can route the message elsewhere.
+// «Додати фото» чекає альбому пів години: пізніші фото вже не про цей обʼєкт,
+// а скріншоти клієнтів, і мають іти своїм шляхом.
+const PHOTO_WAIT_MS = 30 * 60 * 1000;
+
+async function photoWaiting(userId) {
+  const state = await getWaiting(userId);
+  if (!state || state.waiting !== 'photos') return null;
+  if (Date.now() - new Date(state.updated_at).getTime() > PHOTO_WAIT_MS) {
+    await clearWaiting(userId);
+    return null;
+  }
+  return state;
+}
+
+// Пачка фото після «Додати фото». false, якщо пульт фото не чекає: тоді пачка
+// йде далі, в обʼєкт, що додається, чи в розбір скріншотів.
+async function handlePultPhotos(userId, s, fileIds) {
+  const state = await photoWaiting(userId);
+  if (!state) return false;
+  const { role } = await userRole(userId);
+  const row = await objectCard(state.target);
+  const deny = await mayTouchObject(userId, role, row);
+  if (deny) { await clearWaiting(userId); await sendTelegramMessage(s.token, s.chatId, deny); return true; }
+
+  const { photosFromTelegram } = require('./routes/objectPublish');
+  const { MAX_OBJECT_PHOTOS } = require('./objectIntake');
+  const d = row.data || {};
+  const have = Array.isArray(d.photos) ? d.photos : [];
+  const got = await photosFromTelegram(s.token, fileIds.slice(0, Math.max(0, MAX_OBJECT_PHOTOS - have.length)));
+  if (!got.photos.length) {
+    await sendTelegramKeyboard(s.token, s.chatId, 'Telegram не віддав фото. Кинь їх ще раз.',
+      [[{ text: 'Скасувати', callback_data: `p:ph-x:${row.id}` }]]);
+    return true;
+  }
+  const data = { ...d, photos: have.concat(got.photos) };
+  await pool.query('UPDATE catalog_items SET data = $1, updated_at = now() WHERE id = $2', [data, row.id]);
+  await clearWaiting(userId);
+
+  const res = await siteSync.pushListing(row.id, data).catch(err => {
+    console.error('pult: site push failed:', err);
+    return { ok: false };
+  });
+  const fresh = (await objectCard(row.id)) || { ...row, data };
+  const where = res.ok
+    ? 'Обʼєкт пішов на сайт.'
+    : res.skipped
+      ? 'Канал до сайту ще не налаштований, тому на вітрину обʼєкт не пішов.'
+      : 'Сайт зараз не відповідає, обʼєкт у черзі і піде сам, щойно сайт повернеться.';
+  const lost = got.lost ? ` ${got.lost} фото Telegram не віддав.` : '';
+  const buttons = [];
+  const site = siteSync.siteLinkOf(fresh.id, fresh.data || {});
+  if (res.ok && /^https:\/\//.test(site)) buttons.push({ text: 'На сайті', url: site });
+  buttons.push({ text: 'Назад до картки', callback_data: `p:o:${row.id}` });
+  await sendTelegramKeyboard(s.token, s.chatId,
+    `Додав ${got.photos.length} фото, головне перше. ${where}${lost}`, [buttons]);
+  return true;
+}
+
 async function handlePultText(userId, s, text) {
   const state = await getWaiting(userId);
   if (!state) return false;
   const { role } = await userRole(userId);
+
+  if (state.waiting === 'photos') {
+    if (!(await photoWaiting(userId))) return false;
+    await sendTelegramKeyboard(s.token, s.chatId, 'Тут чекаю фото. Кидай фото або тисни «Скасувати».',
+      [[{ text: 'Скасувати', callback_data: `p:ph-x:${state.target}` }]]);
+    return true;
+  }
 
   if (state.waiting === 'price') {
     const n = parseFloat(String(text).replace(/[^\d.]/g, ''));
@@ -585,7 +678,7 @@ function addDays(iso, days) {
 }
 
 module.exports = {
-  handlePultCallback, handlePultText, showObjects, showClients,
+  handlePultCallback, handlePultText, handlePultPhotos, showObjects, showClients, needsPhotos, PHOTO_WAIT_MS,
   mayTouchObject, parseWhen,
   SHOWN, STALE_DAYS,
   money, daysSince, esc,

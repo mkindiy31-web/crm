@@ -84,6 +84,9 @@ async function createDraft(userId) {
     'INSERT INTO pending_objects (id, user_id, item_data, step) VALUES ($1, $2, $3, $4)',
     [id, userId, {}, 'photos']
   );
+  // Новий обʼєкт головніший за давнє «Додати фото» з картки: фото підуть сюди.
+  await pool.query(
+    "UPDATE pult_state SET waiting = NULL, target = NULL WHERE user_id = $1 AND waiting = 'photos'", [userId]);
   return { id, user_id: userId, item_data: {}, step: 'photos', edit_field: null };
 }
 
@@ -164,7 +167,7 @@ function summaryText(data) {
     lines.push(`<b>Власник</b> ${[data.ownerName, data.ownerPhone].filter(Boolean).join(', ')}`);
   }
   const photos = (data.photos || []).length;
-  lines.push(`<b>Фото</b> ${photos}${photos ? ', головне перше' : ''}`);
+  lines.push(photos ? `<b>Фото</b> ${photos}, головне перше` : '<b>Фото</b> немає, на сайт піде з першим фото');
   const missing = oi.missingRequired(data);
   if (missing.length) lines.push('', `Бракує: ${missing.join(', ')}`);
   return lines.join('\n');
@@ -173,7 +176,8 @@ function summaryText(data) {
 function confirmRows(data) {
   const rows = [];
   if (!oi.missingRequired(data).length) {
-    rows.push([{ text: 'Опублікувати на сайт', callback_data: 'o:pub' }]);
+    const photos = (data.photos || []).length;
+    rows.push([{ text: photos ? 'Опублікувати на сайт' : 'Зберегти в срм', callback_data: 'o:pub' }]);
   }
   rows.push([
     { text: 'Змінити поле', callback_data: 'o:e' },
@@ -220,7 +224,10 @@ async function prompt(s, draft, prefix = '') {
       navRow(step, [[{ text: 'Пропустити', callback_data: 'o:sk' }]]));
   }
   if (step === 'photos') {
-    return sendTelegramKeyboard(s.token, s.chatId, text, [[{ text: 'Скасувати', callback_data: 'o:c' }]]);
+    return sendTelegramKeyboard(s.token, s.chatId, text, [
+      [{ text: 'Без фото, додам потім', callback_data: 'o:nph' }],
+      [{ text: 'Скасувати', callback_data: 'o:c' }],
+    ]);
   }
   return sendTelegramKeyboard(s.token, s.chatId, text, navRow(step));
 }
@@ -298,7 +305,7 @@ async function handleText(userId, s, text) {
   }
 
   if (step === 'photos') {
-    await prompt(s, draft, 'Спершу фото.\n\n');
+    await prompt(s, draft, 'Тут чекаю фото.\n\n');
     return true;
   }
 
@@ -364,10 +371,18 @@ async function handleCallback(userId, s, data, cqId) {
     return true;
   }
 
+  if (action === 'nph') {
+    await ack();
+    if (draft.step !== 'photos') { await prompt(s, draft); return true; }
+    await advance(s, draft, item);
+    return true;
+  }
+
   if (action === 'c') {
     await ack();
+    const photos = (item.photos || []).length;
     await sendTelegramKeyboard(s.token, s.chatId,
-      `Скасувати обʼєкт? Фото (${(item.photos || []).length}) теж зникнуть.`,
+      photos ? `Скасувати обʼєкт? Фото (${photos}) теж зникнуть.` : 'Скасувати обʼєкт?',
       [[{ text: 'Так, скасувати', callback_data: 'o:cy' }, { text: 'Ні, продовжити', callback_data: 'o:cn' }]]);
     return true;
   }
@@ -419,7 +434,7 @@ async function handleCallback(userId, s, data, cqId) {
   }
 
   if (action === 'pub') {
-    await ack('Публікую');
+    await ack((item.photos || []).length ? 'Публікую' : 'Зберігаю');
     const { publishDraft } = require('./objectPublish');
     await publishDraft(userId, s, draft);
     return true;

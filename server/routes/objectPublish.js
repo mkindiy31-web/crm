@@ -65,8 +65,11 @@ async function publishDraft(userId, s, draft) {
   const raw = draft.item_data || {};
   const id = 'bot-' + draft.id;
 
-  await sendTelegramMessage(s.token, s.chatId,
-    `Публікую: ${(raw.photos || []).length} фото і дані йдуть на сайт, це до хвилини.`);
+  // Без фото обʼєкт лише лягає в срм, це мить: повідомляти про хвилину нема чого.
+  if ((raw.photos || []).length) {
+    await sendTelegramMessage(s.token, s.chatId,
+      `Публікую: ${raw.photos.length} фото і дані йдуть на сайт, це до хвилини.`);
+  }
   const got = await photosFromTelegram(s.token, raw.photos || []);
   const data = { ...raw, photos: got.photos };
 
@@ -101,6 +104,15 @@ async function publishDraft(userId, s, draft) {
   await dropDraft(draft.id);
 
   const photos = data.photos.length;
+  // Без фото обʼєкт на сайт не йде: картка без жодного фото на вітрині виглядає
+  // покинутою. Піде сам, коли менеджер додасть фото з картки в боті чи в срм.
+  if (!photos) {
+    const lostLine = got.lost ? `\n${got.lost} фото Telegram не віддав, додай їх ще раз.` : '';
+    await sendTelegramKeyboard(s.token, s.chatId,
+      `Зберіг у срм. На сайт обʼєкт піде, коли додаси фото.${lostLine}`,
+      [[{ text: 'Додати фото', callback_data: `p:ph:${id}` }, { text: 'Мої обʼєкти', callback_data: 'o:mine' }]]);
+    return true;
+  }
   const onSite = await siteSync.pushListing(id, item).catch(err => {
     console.error('publishDraft: site push failed:', err);
     return { ok: false };
@@ -122,4 +134,4 @@ async function publishDraft(userId, s, draft) {
   return true;
 }
 
-module.exports = { publishDraft, buildTitle, buildDescription };
+module.exports = { publishDraft, buildTitle, buildDescription, photosFromTelegram };

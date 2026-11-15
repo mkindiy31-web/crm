@@ -184,9 +184,10 @@ const SUMMARY_ORDER = [
   ['ownerPhone', 'Телефон власника'],
 ];
 
+// Фото не обовʼязкові: обʼєкт буває треба завести одразу, а фото кинути потім
+// (Марко, 15.11.2026). Без фото він лягає в срм, а на сайт іде з першим фото.
 function missingRequired(data) {
   const need = [
-    ['photos', 'фото'],
     ['propType', 'тип'],
     ['purpose', 'продаж чи оренда'],
     ['district', 'район'],
@@ -194,7 +195,7 @@ function missingRequired(data) {
     ['price', 'ціна'],
   ];
   return need
-    .filter(([key]) => (key === 'photos' ? !(data.photos || []).length : !data[key]))
+    .filter(([key]) => !data[key])
     .map(([, label]) => label);
 }
 

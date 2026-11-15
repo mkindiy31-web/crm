@@ -169,7 +169,18 @@ async function sendListing(crmId, data) {
   return { res: await postToSite(payload), payload };
 }
 
+// Обʼєкт із бота без фото чекає першого фото в срм: на вітрину без фото не йде
+// (15.11.2026). Той, що вже на сайті, оновлюється як завжди; обʼєкти, заведені в
+// срм, цим не зачеплені.
+function waitsForPhotos(crmId, data) {
+  const d = data || {};
+  if (d.source !== 'bot') return false;
+  if ((Array.isArray(d.photos) ? d.photos : []).length) return false;
+  return !siteIdOf(crmId, d);
+}
+
 async function pushListing(crmId, data) {
+  if (waitsForPhotos(crmId, data)) return { ok: false, noPhotos: true };
   if (!siteConfigured()) return { ok: false, skipped: true };
   const { res, payload } = await sendListing(crmId, data);
   if (res.ok) {
@@ -223,4 +234,4 @@ async function drain(limit = 20) {
   return { sent, pending, failed };
 }
 
-module.exports = { pushListing, drain, toSitePayload, siteIdOf, siteLinkOf, siteConfigured, syncPhotos, isDataPhoto, BACKOFF };
+module.exports = { pushListing, waitsForPhotos, drain, toSitePayload, siteIdOf, siteLinkOf, siteConfigured, syncPhotos, isDataPhoto, BACKOFF };

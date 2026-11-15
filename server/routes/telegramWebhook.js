@@ -936,6 +936,8 @@ function scheduleFlush(key, userId, settings) {
     // «Додати обʼєкт» і одразу кидає альбом, і перші фото приходять раніше,
     // ніж зʼявилась чернетка обʼєкта. За DEBOUNCE_MS вона вже є.
     try {
+      // «Додати фото» з картки обʼєкта чекає саме цю пачку.
+      if (await pult.handlePultPhotos(userId, settings, entry.fileIds)) return;
       const draft = await objectDialog.getDraft(userId);
       if (draft && !objectIntake.isTerminal(draft.step)) {
         await objectDialog.handlePhotos(userId, settings, entry.fileIds.slice(0, objectIntake.MAX_OBJECT_PHOTOS));
