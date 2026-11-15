@@ -182,7 +182,7 @@ async function sendSourcePrompt(s, row, isReminder) {
   const prefix = isReminder
     ? '⏰ Нагадування — ще не заповнено.\n\n'
     : '🆕 Новий клієнт розпізнаний AI — ';
-  const text = `${prefix}<b>${c.name}</b>${c.phone ? ' (' + c.phone + ')' : ''}\n\n📍 Звідки прийшов клієнт?`;
+  const text = `${prefix}<b>${escapeHtmlTg(c.name)}</b>${c.phone ? ' (' + escapeHtmlTg(c.phone) + ')' : ''}\n\n📍 Звідки прийшов клієнт?`;
   await sendTelegramKeyboard(s.token, s.chatId, text, sourceKeyboardRows('src', row.id));
 }
 
@@ -193,21 +193,21 @@ async function sendSourceFixPrompt(s, row, isReminder) {
 }
 
 function escapeHtmlTg(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 async function sendDetailsPrompt(s, row, isReminder) {
   const c = row.client_data;
-  const prefix = isReminder ? '⏰ Нагадування — ' : `✅ Джерело: ${c.source}\n`;
+  const prefix = isReminder ? '⏰ Нагадування — ' : `✅ Джерело: ${escapeHtmlTg(c.source)}\n`;
   await sendTelegramMessage(s.token, s.chatId,
-    `${prefix}Напишіть одним повідомленням: який бюджет і що шукає клієнт <b>${c.name}</b>?\n\n(наприклад: "шукає 2-кімнатну в центрі, бюджет 60-70 тисяч")`);
+    `${prefix}Напишіть одним повідомленням: який бюджет і що шукає клієнт <b>${escapeHtmlTg(c.name)}</b>?\n\n(наприклад: "шукає 2-кімнатну в центрі, бюджет 60-70 тисяч")`);
 }
 
 async function sendTaskPrompt(s, row, isReminder) {
   const c = row.client_data;
   const prefix = isReminder ? '⏰ Нагадування — ' : '✅ Прийнято\n';
   await sendTelegramMessage(s.token, s.chatId,
-    `${prefix}Останній крок: яке перше завдання поставити для <b>${c.name}</b>?\n\n(наприклад: "подзвонити завтра о 15:00" або "зателефонувати ввечері")`);
+    `${prefix}Останній крок: яке перше завдання поставити для <b>${escapeHtmlTg(c.name)}</b>?\n\n(наприклад: "подзвонити завтра о 15:00" або "зателефонувати ввечері")`);
 }
 
 // Sends the next outstanding question for this manager's oldest unfinished
@@ -441,7 +441,7 @@ async function finalizePendingIntake(userId, row, text) {
       : '';
     const taskLabel = TASK_LABELS[task.type] || task.type;
     await sendTelegramMessage(s.token, s.chatId,
-      `✅ Клієнта остаточно додано в CRM: <b>${c.name}</b> (${c.phone})\n📍 Джерело: ${c.source}${budgetLine}\n🏠 Потреба: ${c.clientRequest || '—'}\n📌 Завдання: ${taskLabel} — ${task.date}${task.time ? ' ' + task.time : ''}`);
+      `✅ Клієнта остаточно додано в CRM: <b>${escapeHtmlTg(c.name)}</b> (${escapeHtmlTg(c.phone)})\n📍 Джерело: ${escapeHtmlTg(c.source)}${budgetLine}\n🏠 Потреба: ${escapeHtmlTg(c.clientRequest || '—')}\n📌 Завдання: ${taskLabel} — ${task.date}${task.time ? ' ' + task.time : ''}`);
   } catch (err) {
     console.error('finalizePendingIntake failed:', err);
     await sendTelegramMessage(s.token, s.chatId, '❌ Помилка збереження клієнта: ' + (err.message || 'невідома помилка'));
@@ -577,9 +577,9 @@ async function processBatch(userId, fileIds) {
     }
 
     const lines = [`🤖 <b>AI-аналіз завершено</b>`, ''];
-    if (pendingNew.length) lines.push(`🆕 Розпізнано нових клієнтів (${pendingNew.length}): ${pendingNew.join(', ')}\n📋 Зараз запитаю джерело/бюджет/потребу/завдання по кожному — без цього картка не потрапить в CRM.`);
-    if (updated.length) lines.push(`🔁 Доповнено нотатками (${updated.length}): ${updated.join(', ')}`);
-    if (scheduled.length) lines.push(`📅 Заплановано: ${scheduled.join('; ')}`);
+    if (pendingNew.length) lines.push(`🆕 Розпізнано нових клієнтів (${pendingNew.length}): ${pendingNew.map(escapeHtmlTg).join(', ')}\n📋 Зараз запитаю джерело/бюджет/потребу/завдання по кожному — без цього картка не потрапить в CRM.`);
+    if (updated.length) lines.push(`🔁 Доповнено нотатками (${updated.length}): ${updated.map(escapeHtmlTg).join(', ')}`);
+    if (scheduled.length) lines.push(`📅 Заплановано: ${scheduled.map(escapeHtmlTg).join('; ')}`);
     await sendTelegramMessage(s.token, s.chatId, lines.join('\n'));
 
     if (pendingNew.length) await advancePendingIntakeQueue(userId);
@@ -646,7 +646,7 @@ async function processPersonalTodo(userId, text) {
     }
     await sendTelegramMessage(
       s.token, s.chatId,
-      `✅ Додано в мій to-do список на ${todo.repeatDays} дні поспіль:\n📝 ${todo.task}\n📅 ${dates[0]} — ${dates[dates.length - 1]}${todo.dueTime ? ' щодня о ' + todo.dueTime : ''}`
+      `✅ Додано в мій to-do список на ${todo.repeatDays} дні поспіль:\n📝 ${escapeHtmlTg(todo.task)}\n📅 ${dates[0]} — ${dates[dates.length - 1]}${todo.dueTime ? ' щодня о ' + todo.dueTime : ''}`
     );
     return;
   }
@@ -659,7 +659,7 @@ async function processPersonalTodo(userId, text) {
   const when = todo.dueDate
     ? `\n📅 На: ${todo.dueDate}${todo.dueTime ? ' ' + todo.dueTime : ''}`
     : '\n📋 Без дати — у списку "На потім"';
-  await sendTelegramMessage(s.token, s.chatId, `✅ Додано в мій to-do список:\n📝 ${todo.task}${when}`);
+  await sendTelegramMessage(s.token, s.chatId, `✅ Додано в мій to-do список:\n📝 ${escapeHtmlTg(todo.task)}${when}`);
 }
 
 // Matches "клієнт"/"клієнту"/"клієнта"/"клієнтові" etc. — a message naming a
@@ -743,7 +743,7 @@ async function processNewClientFromText(userId, phoneNorm, text) {
       [c.id, userId, c]
     );
     await sendTelegramMessage(s.token, s.chatId,
-      `🆕 Розпізнано нового клієнта: <b>${c.name}</b> (${c.phone})${scheduledLine}\n📋 Зараз запитаю джерело/бюджет/потребу/завдання — без цього картка не потрапить в CRM.`);
+      `🆕 Розпізнано нового клієнта: <b>${escapeHtmlTg(c.name)}</b> (${escapeHtmlTg(c.phone)})${scheduledLine}\n📋 Зараз запитаю джерело/бюджет/потребу/завдання — без цього картка не потрапить в CRM.`);
     await advancePendingIntakeQueue(userId);
   } catch (err) {
     console.error('processNewClientFromText failed:', err);
@@ -784,14 +784,14 @@ async function processClientTaskByName(userId, text) {
 
   if (matches.length === 0) {
     await sendTelegramMessage(s.token, s.chatId,
-      `❌ Клієнта на ім'я "${info.clientName}" не знайдено у вашій базі. Перевірте ім'я або вкажіть номер телефону.`);
+      `❌ Клієнта на ім'я "${escapeHtmlTg(info.clientName)}" не знайдено у вашій базі. Перевірте ім'я або вкажіть номер телефону.`);
     return;
   }
 
   if (matches.length > 1) {
-    const list = matches.map(m => `• ${m.data.name}${m.data.phone ? ' — ' + m.data.phone : ''}`).join('\n');
+    const list = matches.map(m => `• ${escapeHtmlTg(m.data.name)}${m.data.phone ? ' — ' + escapeHtmlTg(m.data.phone) : ''}`).join('\n');
     await sendTelegramMessage(s.token, s.chatId,
-      `Знайшов декілька клієнтів на ім'я "${info.clientName}":\n${list}\n\nНапишіть номер телефону потрібного клієнта, щоб я оновив саме його картку.`);
+      `Знайшов декілька клієнтів на ім'я "${escapeHtmlTg(info.clientName)}":\n${list}\n\nНапишіть номер телефону потрібного клієнта, щоб я оновив саме його картку.`);
     return;
   }
 
@@ -826,7 +826,7 @@ async function processClientTaskByName(userId, text) {
       await upsertClientAndNotify(client, reqUser, c);
       await client.query('COMMIT');
 
-      await sendTelegramMessage(s.token, s.chatId, `✅ Оновлено картку: <b>${c.name}</b>${stageLine}${scheduledLine}`);
+      await sendTelegramMessage(s.token, s.chatId, `✅ Оновлено картку: <b>${escapeHtmlTg(c.name)}</b>${stageLine}${scheduledLine}`);
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -913,7 +913,7 @@ async function processTextUpdate(userId, text) {
       await upsertClientAndNotify(client, reqUser, c);
       await client.query('COMMIT');
 
-      await sendTelegramMessage(s.token, s.chatId, `✅ Оновлено картку: <b>${c.name}</b> (${c.phone || phoneNorm})${stageLine}${scheduledLine}`);
+      await sendTelegramMessage(s.token, s.chatId, `✅ Оновлено картку: <b>${escapeHtmlTg(c.name)}</b> (${escapeHtmlTg(c.phone || phoneNorm)})${stageLine}${scheduledLine}`);
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
