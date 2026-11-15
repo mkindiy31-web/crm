@@ -1,6 +1,7 @@
 const express = require('express');
 const { pool } = require('../db');
 const siteSync = require('../siteSync');
+const automations = require('../automations');
 
 const router = express.Router();
 
@@ -15,9 +16,28 @@ function priceNum(price) {
   return isNaN(n) ? null : n;
 }
 
-function toItem(row) {
+// Скільки днів вільний обʼєкт без руху, якщо не менше строку автоматики
+// «Обʼєкт без руху»; 0, коли рухався недавно, не «Вільно» чи автоматику вимкнено.
+// Рухом рахується будь-яке збереження: воно оновлює updated_at.
+function staleDaysOf(row, term) {
+  if (!term || !row.updated_at) return 0;
+  if (((row.data || {}).status || 'available') !== 'available') return 0;
+  const days = Math.floor((Date.now() - new Date(row.updated_at).getTime()) / 86400000);
+  return days >= term ? days : 0;
+}
+
+async function staleTerm() {
+  try {
+    if (!(await automations.isEnabled(pool, 'stale-nudge'))) return 0;
+    const cfg = await automations.getConfig(pool, 'stale-nudge');
+    return parseInt(cfg.days, 10) > 0 ? parseInt(cfg.days, 10) : 0;
+  } catch { return 0; }
+}
+
+function toItem(row, term = 0) {
   return {
     ...row.data,
+    staleDays: staleDaysOf(row, term),
     // Куди веде «Відкрити на сайті»; порожньо, поки обʼєкт не на сайті чи не «Вільно».
     siteLink: siteSync.siteLinkOf(row.data.id, row.data),
     createdById: row.created_by,
@@ -28,12 +48,13 @@ function toItem(row) {
 
 router.get('/', async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT c.data, c.created_by, u.display_name AS created_by_name, u.phone AS created_by_phone
+    `SELECT c.data, c.created_by, c.updated_at, u.display_name AS created_by_name, u.phone AS created_by_phone
      FROM catalog_items c LEFT JOIN users u ON u.id = c.created_by
      WHERE c.archived_at IS NULL
      ORDER BY c.created_at DESC`
   );
-  res.json(rows.map(toItem));
+  const term = await staleTerm();
+  res.json(rows.map(r => toItem(r, term)));
 });
 
 router.get('/:id', async (req, res) => {
@@ -69,6 +90,7 @@ router.put('/:id', async (req, res) => {
 
   const item = { ...(req.body || {}) };
   delete item.siteLink;
+  delete item.staleDays; // рахується з updated_at при видачі, у даних не живе
   // Форма шле лише свої поля. Решта (номер і адреса на сайті, вкладення фото,
   // стан і призначення з бота) лишається: без неї зміна в срм створювала на
   // сайті новий запис замість оновити наявний.
@@ -87,3 +109,5 @@ router.delete('/:id', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.staleDaysOf = staleDaysOf;
+module.exports.staleTerm = staleTerm;

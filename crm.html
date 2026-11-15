@@ -663,6 +663,10 @@
   .catalog-address { font-size: 11px; color: var(--text-s); margin-bottom: 8px; }
   .catalog-owner { display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: var(--text-m); padding-top: 8px; border-top: 1px solid var(--border); }
   .catalog-owner b { color: var(--text-s); font-weight: 600; }
+  .catalog-card.stale { border-color: rgba(138,96,32,0.55); }
+  .catalog-stale { position: absolute; bottom: 8px; left: 8px; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; padding: 3px 8px; border-radius: 3px; border: 1px solid rgba(138,96,32,0.55); background: #fbf3e4; color: #8a6020; }
+  .catalog-stale-filter { color: #d9a85a; font-weight: 600; }
+  body[data-theme="light"] .catalog-stale-filter { color: var(--warning); }
   .catalog-status { position: absolute; top: 8px; left: 8px; font-size: 9px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; padding: 3px 8px; border-radius: 3px; border: 1px solid; }
   .catalog-actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }
   .catalog-actions .card-btn { width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; background: var(--bg2); border: 1px solid var(--border-s); border-radius: 3px; cursor: pointer; font-size: 12px; color: var(--text-s); }
@@ -3463,7 +3467,7 @@ async function deleteManagerConfirm(id, name) {
 let _catalogLightbox = { photos: [], index: 0, title: '' };
 let catalogCache = [];
 let catalogSort = 'new'; // 'new' | 'price_asc' | 'price_desc'
-let catalogFilters = { q: '', propType: '', rooms: '', priceMin: '', priceMax: '', status: '', showSold: false };
+let catalogFilters = { q: '', propType: '', rooms: '', priceMin: '', priceMax: '', status: '', showSold: false, staleOnly: false };
 let _catalogEditId = null;
 let _catalogPhotos = [];
 let _catalogModalOpen = false;
@@ -3490,6 +3494,12 @@ function toggleCatalogShowSold(checked) {
   renderCatalogGrid();
 }
 
+// «Лише без руху»: вільні обʼєкти, яких не змінювали строк автоматики «Обʼєкт без руху».
+function toggleCatalogStaleOnly(checked) {
+  catalogFilters.staleOnly = checked;
+  renderCatalogGrid();
+}
+
 async function renderCatalogView() {
   const boardWrap = document.getElementById('board-wrap');
   boardWrap.innerHTML = '<div style="padding:60px;text-align:center;color:var(--text-m);">⏳ Завантаження каталогу...</div>';
@@ -3509,6 +3519,7 @@ function renderCatalogGrid() {
   let list = catalogCache.filter(o => {
     if (!f.showSold && (o.status === 'sold' || o.status === 'withdrawn')) return false;
     if (f.status && o.status !== f.status) return false;
+    if (f.staleOnly && !(o.staleDays > 0)) return false;
     if (f.propType && o.propType !== f.propType) return false;
     if (f.rooms && String(o.rooms || '') !== f.rooms) return false;
     const price = parseFloat(o.price) || 0;
@@ -3528,6 +3539,7 @@ function renderCatalogGrid() {
     return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
   });
 
+  const staleCount = catalogCache.filter(o => o.staleDays > 0).length;
   const roomOptions = [...new Set(catalogCache.map(o => String(o.rooms || '')).filter(Boolean))].sort();
 
   const toolbar = `
@@ -3554,6 +3566,9 @@ function renderCatalogGrid() {
       <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-m);cursor:pointer;white-space:nowrap;">
         <input type="checkbox" ${f.showSold?'checked':''} onchange="toggleCatalogShowSold(this.checked)"> показати продані і зняті
       </label>
+      ${staleCount || f.staleOnly ? `<label class="catalog-stale-filter" style="display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer;white-space:nowrap;">
+        <input type="checkbox" ${f.staleOnly?'checked':''} onchange="toggleCatalogStaleOnly(this.checked)"> лише без руху · ${staleCount}
+      </label>` : ''}
       <button class="btn btn-primary" style="margin-left:auto;white-space:nowrap;" onclick="openCatalogModal()">➕ Додати обʼєкт</button>
     </div>`;
 
@@ -3580,12 +3595,13 @@ function renderCatalogCard(o) {
   const editable = canEditCatalogItem(o);
 
   return `
-    <div class="catalog-card" onclick="openCatalogDetail('${o.id}')">
+    <div class="catalog-card${o.staleDays > 0 ? ' stale' : ''}" onclick="openCatalogDetail('${o.id}')">
       <div class="catalog-cover">
         ${cover ? `<img src="${cover}" loading="lazy">` : `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--text-m);font-size:28px;">🏠</div>`}
         <div class="catalog-status" style="background:${st.color}22;color:${st.color};border-color:${st.color}55;">${st.label}</div>
         ${priceLabel ? `<div class="catalog-price">${priceLabel}</div>` : ''}
         ${photos.length ? `<div class="catalog-photocount">📷 ${photos.length}</div>` : ''}
+        ${o.staleDays > 0 ? `<div class="catalog-stale">Без руху ${Number(o.staleDays)} дн.</div>` : ''}
       </div>
       <div class="catalog-body">
         <div class="catalog-title">${escHtml(o.title || o.address || 'Обʼєкт')}</div>
