@@ -8,7 +8,7 @@
 
 const { pool } = require('./db');
 const { STAGES, DEAL_STAGE_ID, commissionOf } = require('./stages');
-const { addHistory, appendNote, stageLabel, dateUA, timeUA, objectStatusLabel, roomsLabel } = require('./cardFormat');
+const { addHistory, appendNote, stageLabel, dateUA, timeUA, objectStatusLabel, roomsLabel, areaLabel, genitiveName } = require('./cardFormat');
 const siteSync = require('./siteSync');
 const { sendTelegramMessage, sendTelegramKeyboard, answerCallbackQuery, taskWord, crmLink } = require('./telegram');
 
@@ -53,7 +53,7 @@ function objectLine(row, days = STALE_DAYS) {
   const d = row.data || {};
   const head = [d.propType, d.district].filter(Boolean).join(', ') || d.title || 'Обʼєкт';
   const specs = [
-    d.area && d.area + ' м²',
+    d.area && areaLabel(d.area),
     d.rooms && roomsLabel(d.rooms),
     d.floor && (d.totalFloors ? `${d.floor}/${d.totalFloors}` : d.floor),
   ].filter(Boolean).join(', ');
@@ -76,11 +76,15 @@ function objectsText(list) {
   return lines.join('\n').trim();
 }
 
+// Кнопка обʼєкта несе площу й ціну: дві «Квартира, Центр» інакше однакові.
+function objectButton(row) {
+  const o = objectLine(row);
+  const text = [o.head, areaLabel((row.data || {}).area), o.price].filter(Boolean).join(' · ');
+  return { text, callback_data: `p:o:${row.id}` };
+}
+
 function objectsRows(list) {
-  const rows = list.items.slice(0, SHOWN).map(r => {
-    const o = objectLine(r);
-    return [{ text: o.head, callback_data: `p:o:${r.id}` }];
-  });
+  const rows = list.items.slice(0, SHOWN).map(r => [objectButton(r)]);
   if (list.total > SHOWN) rows.push([{ text: `Показати всі ${list.total}`, callback_data: 'p:o-all' }]);
   rows.push([{ text: 'Закрити', callback_data: 'p:close' }]);
   return rows;
@@ -373,10 +377,25 @@ async function handlePultCallback(userId, s, data, cqId) {
       await sendTelegramMessage(s.token, s.chatId, 'Цього обʼєкта вже немає в срм.');
       return true;
     }
-    const deny = await mayTouchObject(userId, role, row);
-    if (deny) { await ack(deny); await sendTelegramMessage(s.token, s.chatId, deny); return true; }
+    // Дивитись картку може кожен: підбір веде і на чужі обʼєкти, база спільна.
+    // Змінити ціну чи зняти з продажу далі може лише той, хто завів.
     await ack();
     await sendTelegramKeyboard(s.token, s.chatId, objectCardText(row), objectCardRows(row));
+    return true;
+  }
+
+  if (action === 'back-price') {
+    const [objId, was] = [parts[2], parts.slice(3).join(':')];
+    const row = await objectCard(objId);
+    const deny = await mayTouchObject(userId, role, row);
+    if (deny) { await ack(deny); await sendTelegramMessage(s.token, s.chatId, deny); return true; }
+    const d = row.data || {};
+    if (!(parseFloat(was) > 0)) { await ack(); return true; }
+    await saveObject(row, { ...d, price: String(was) });
+    await ack(money(was, d.currency));
+    await sendTelegramKeyboard(s.token, s.chatId,
+      `Повернув ціну ${money(was, d.currency)}. На сайті теж.`,
+      [[{ text: 'Назад до картки', callback_data: `p:o:${objId}` }]]);
     return true;
   }
 
@@ -398,9 +417,13 @@ async function handlePultCallback(userId, s, data, cqId) {
     const next = action === 'off' ? 'withdrawn' : 'available';
     await saveObject(row, { ...d, status: next });
     await ack(objectStatusLabel(next));
-    await sendTelegramMessage(s.token, s.chatId, next === 'withdrawn'
+    const backToCard = { text: 'Назад до картки', callback_data: `p:o:${id}` };
+    await sendTelegramKeyboard(s.token, s.chatId, next === 'withdrawn'
       ? 'Зняв з продажу, статус «Знято». З вітрини сайту обʼєкт зник.'
-      : 'Повернув у продаж, статус «Вільно». На вітрині сайту знову є.');
+      : 'Повернув у продаж, статус «Вільно». На вітрині сайту знову є.',
+      next === 'withdrawn'
+        ? [[{ text: 'Повернути в продаж', callback_data: `p:on:${id}` }, backToCard]]
+        : [[backToCard]]);
     return true;
   }
 
@@ -433,16 +456,19 @@ async function handlePultCallback(userId, s, data, cqId) {
       await ack(stageLabel(next));
       const line = next.id === DEAL_STAGE_ID && commissionOf(updated) > 0
         ? `\nКомісія: ${money(Math.round(commissionOf(updated)), 'USD')}` : '';
-      await sendTelegramMessage(s.token, s.chatId,
-        `${esc(c.name || 'Клієнт')} тепер на етапі «${stageLabel(next)}».${line}`);
+      await sendTelegramKeyboard(s.token, s.chatId,
+        `${esc(c.name || 'Клієнт')} тепер на етапі «${stageLabel(next)}».${line}`,
+        [[{ text: 'Назад до картки', callback_data: `p:c:${id}` }]]);
       return true;
     }
 
     if (action === 'match') {
       await ack();
       const found = await matchFor(c);
+      const who = genitiveName(c.name);
+      const backToCard = [{ text: 'Назад до картки', callback_data: `p:c:${id}` }];
       if (!found.length) {
-        await sendTelegramMessage(s.token, s.chatId, 'Під її запит зараз нічого немає.');
+        await sendTelegramKeyboard(s.token, s.chatId, `Під запит ${esc(who)} зараз нічого немає.`, [backToCard]);
         return true;
       }
       const lines = found.map(r => {
@@ -450,8 +476,8 @@ async function handlePultCallback(userId, s, data, cqId) {
         return `<b>${esc(o.head)}</b>${o.specs ? '\n' + esc(o.specs) : ''}\n${o.price}`;
       });
       await sendTelegramKeyboard(s.token, s.chatId,
-        'Під її запит підходять:\n\n' + lines.join('\n\n'),
-        [[{ text: 'Назад до картки', callback_data: `p:c:${id}` }]]);
+        `Під запит ${esc(who)} підходять:\n\n` + lines.join('\n\n'),
+        [...found.map(r => [objectButton(r)]), backToCard]);
       return true;
     }
 
@@ -504,7 +530,8 @@ async function handlePultText(userId, s, text) {
     await pool.query('UPDATE clients SET data = $1, updated_at = now() WHERE id = $2 AND manager_id = $3',
       [updated, state.target, userId]);
     await clearWaiting(userId);
-    await sendTelegramMessage(s.token, s.chatId, 'Дописав у картку.');
+    await sendTelegramKeyboard(s.token, s.chatId, 'Дописав у картку.',
+      [[{ text: 'Назад до картки', callback_data: `p:c:${state.target}` }]]);
     return true;
   }
 
@@ -519,8 +546,9 @@ async function handlePultText(userId, s, text) {
     await pool.query('UPDATE clients SET data = $1, updated_at = now() WHERE id = $2 AND manager_id = $3',
       [updated, state.target, userId]);
     await clearWaiting(userId);
-    await sendTelegramMessage(s.token, s.chatId,
-      `Поставив дзвінок на ${d}.${m}${when.time ? ' о ' + when.time : ''}. Він уже в картці в срм.`);
+    await sendTelegramKeyboard(s.token, s.chatId,
+      `Поставив дзвінок на ${d}.${m}${when.time ? ' о ' + when.time : ''}. Він уже в картці в срм.`,
+      [[{ text: 'Назад до картки', callback_data: `p:c:${state.target}` }]]);
     return true;
   }
 
@@ -561,7 +589,7 @@ module.exports = {
   mayTouchObject, parseWhen,
   SHOWN, STALE_DAYS,
   money, daysSince, esc,
-  myObjects, objectLine, objectsText, objectsRows, objectCard, objectCardText, objectCardRows,
+  myObjects, objectLine, objectsText, objectsRows, objectButton, objectCard, objectCardText, objectCardRows,
   myClients, clientLine, clientsText, clientsRows, clientCard, clientCardText, clientCardRows,
   nextTask, matchFor,
   setWaiting, getWaiting, clearWaiting,

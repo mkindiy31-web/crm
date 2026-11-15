@@ -866,11 +866,7 @@ async function processTextUpdate(userId, text) {
     } else if (looksLikeTodoRequest(text)) {
       await processPersonalTodo(userId, text);
     } else {
-      await sendTelegramMessage(s.token, s.chatId,
-        'Не знайшов номер телефону клієнта у повідомленні.\n\n' +
-        '📞 Щоб оновити картку клієнта — напишіть його номер і що нового, або назвіть клієнта на ім\'я (наприклад "додай завдання клієнту Марку подзвонити завтра о 15:00").\n' +
-        '✅ Щоб додати особисте завдання — почніть з "додай завдання..." (наприклад: "додай завдання зателефонувати в п\'ятницю").\n' +
-        '📸 Або надішліть 1–10 фото-скріншотів переписки з покупцем.');
+      await sendTelegramKeyboard(s.token, s.chatId, NOT_UNDERSTOOD, MENU_ROWS);
     }
     return;
   }
@@ -951,6 +947,12 @@ function scheduleFlush(key, userId, settings) {
 function photoCapFor(key) {
   return key.startsWith('obj:') ? objectIntake.MAX_OBJECT_PHOTOS : MAX_PHOTOS;
 }
+
+// Відповідь на текст чи повідомлення, якого бот не зрозумів: коротко і меню,
+// а не інструкція (екран «Бот не зрозумів повідомлення», 15.11.2026).
+const NOT_UNDERSTOOD = 'Не зрозумів. Обирай з меню або напиши номер клієнта і що нового, ' +
+  'наприклад «0671234567 дзвінок завтра 14:00».';
+const VOICE_NOT_UNDERSTOOD = 'Голосові поки не розумію. Напиши текстом або обирай з меню.';
 
 const MENU_ROWS = [
   [{ text: 'Додати обʼєкт', callback_data: 'o:start' }, { text: 'Мої обʼєкти', callback_data: 'o:mine' }],
@@ -1038,7 +1040,22 @@ router.post('/:userId', async (req, res) => {
     if (!msg || String(msg.chat?.id) !== String(s.chatId)) return;
 
     if (!Array.isArray(msg.photo) || !msg.photo.length) {
-      if (!msg.text) return;
+      if (!msg.text) {
+        const userContent = ['voice', 'audio', 'video_note', 'document', 'sticker', 'video', 'animation', 'location', 'contact']
+          .some(k => msg[k]);
+        if (!userContent) return; // службові повідомлення (закріплення тощо) без відповіді
+        // Голосове, файл, стікер: раніше бот мовчав. Під час додавання обʼєкта
+        // відповідає крок діалогу, як на будь-яку незрозумілу відповідь.
+        const draft = await objectDialog.getDraft(userId);
+        if (draft && !objectIntake.isTerminal(draft.step)) {
+          objectDialog.handleText(userId, s, msg.caption || '').catch(err => console.error('objectDialog.handleText error:', err));
+          return;
+        }
+        const voice = msg.voice || msg.audio || msg.video_note;
+        sendTelegramKeyboard(s.token, s.chatId, voice ? VOICE_NOT_UNDERSTOOD : NOT_UNDERSTOOD, MENU_ROWS)
+          .catch(err => console.error('not understood reply error:', err));
+        return;
+      }
 
       // Commands used to be dropped here, which is why /start did nothing.
       if (msg.text.startsWith('/')) {

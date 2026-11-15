@@ -50,4 +50,30 @@ function roomsLabel(rooms) {
   return `${n} ${word}`;
 }
 
-module.exports = { isoKyiv, dateUA, timeUA, uid, addHistory, notesText, appendNote, stageLabel, OBJECT_STATUS, objectStatusLabel, roomsLabel };
+// Площа так, як її пишуть люди: «40,1 м²», а не «40.1 м²».
+function areaLabel(area) {
+  const s = String(area == null ? '' : area).trim();
+  return s ? s.replace('.', ',') + ' м²' : '';
+}
+
+// «Під запит Діми»: імʼя клієнта в родовому відмінку. Лише перше слово і лише
+// кирилицею; що правилом не відмінюється певно, дає «клієнта».
+const GENITIVE_EXCEPTIONS = { 'ігор': 'Ігоря', 'любов': 'Любові', 'лев': 'Лева' };
+function genitiveName(name) {
+  const w = String(name == null ? '' : name).trim().split(/\s+/)[0] || '';
+  if (!/^[А-ЩЬЮЯҐЄІЇа-щьюяґєії\u02bc'’-]{2,}$/u.test(w) || /^клієнт/iu.test(w)) return 'клієнта';
+  const low = w.toLowerCase();
+  if (GENITIVE_EXCEPTIONS[low]) return GENITIVE_EXCEPTIONS[low];
+  const caps = w === w.toUpperCase(); // «ВОЛКАЧ» дає «ВОЛКАЧА», не «ВОЛКАЧа»
+  const cut = (n, end) => w.slice(0, w.length - n) + (caps ? end.toUpperCase() : end);
+  if (/ія$/u.test(low)) return cut(1, 'ї');
+  if (/я$/u.test(low)) return cut(1, 'і');
+  if (/[жчшщ]а$/u.test(low)) return cut(1, 'і');
+  if (/а$/u.test(low)) return cut(1, 'и');
+  if (/о$/u.test(low)) return cut(1, 'а');
+  if (/[йь]$/u.test(low)) return cut(1, 'я');
+  if (/[бвгґдзклмнпрстфхцжчш]$/u.test(low)) return cut(0, 'а');
+  return 'клієнта';
+}
+
+module.exports = { isoKyiv, dateUA, timeUA, uid, addHistory, notesText, appendNote, stageLabel, OBJECT_STATUS, objectStatusLabel, roomsLabel, areaLabel, genitiveName };
