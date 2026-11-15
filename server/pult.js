@@ -49,7 +49,20 @@ async function myObjects(userId) {
   return { total: rows.length, forSale, items: rows };
 }
 
-function objectLine(row, days = STALE_DAYS) {
+// Строк «без руху» той самий, що в нагадуванні й у срм: з автоматики «Обʼєкт без руху».
+// Вимкнена автоматика прибирає позначку і тут. Оновлюється на вході в пульт.
+let staleTerm = STALE_DAYS;
+async function refreshStaleTerm() {
+  try {
+    const auto = require('./automations');
+    if (!(await auto.isEnabled(pool, 'stale-nudge'))) { staleTerm = Infinity; return staleTerm; }
+    const d = parseInt((await auto.getConfig(pool, 'stale-nudge')).days, 10);
+    staleTerm = d > 0 ? d : STALE_DAYS;
+  } catch { /* лишається попередній строк */ }
+  return staleTerm;
+}
+
+function objectLine(row, days = staleTerm) {
   const d = row.data || {};
   const head = [d.propType, d.district].filter(Boolean).join(', ') || d.title || 'Обʼєкт';
   const specs = [
@@ -330,6 +343,7 @@ async function saveObject(row, data) {
 }
 
 async function showObjects(userId, s) {
+  await refreshStaleTerm();
   const list = await myObjects(userId);
   return sendTelegramKeyboard(s.token, s.chatId, objectsText(list), objectsRows(list));
 }
@@ -346,6 +360,7 @@ async function handlePultCallback(userId, s, data, cqId) {
   const id = parts.slice(2).join(':');
   const { role } = await userRole(userId);
   const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Kyiv' });
+  await refreshStaleTerm();
 
   if (action === 'o' && !id) { await ack(); await showObjects(userId, s); return true; }
   if (action === 'c') {
@@ -685,5 +700,5 @@ module.exports = {
   myObjects, objectLine, objectsText, objectsRows, objectButton, objectCard, objectCardText, objectCardRows,
   myClients, clientLine, clientsText, clientsRows, clientCard, clientCardText, clientCardRows,
   nextTask, matchFor,
-  setWaiting, getWaiting, clearWaiting,
+  setWaiting, getWaiting, clearWaiting, refreshStaleTerm,
 };
