@@ -100,9 +100,16 @@ async function dropDraft(id) {
 
 // ── keyboards ───────────────────────────────────────────────────────────────
 
+// Назад веде на попередній крок з кнопками. До фото не веде: повернення на крок
+// фото стирало всі надіслані фото, а дописати фото можна й так, просто надіславши.
+function backStep(step) {
+  const back = oi.prevStep(step);
+  return back && back !== 'photos' ? back : null;
+}
+
 function navRow(step, extra = []) {
   const row = [];
-  if (oi.prevStep(step)) row.push({ text: 'Назад', callback_data: 'o:b' });
+  if (backStep(step)) row.push({ text: 'Назад', callback_data: 'o:b' });
   row.push({ text: 'Скасувати', callback_data: 'o:c' });
   return extra.concat([row]);
 }
@@ -281,6 +288,11 @@ async function handleText(userId, s, text) {
   }
 
   if (step === 'owner') {
+    // «немає», «ні», «-»: власника не знають, це те саме, що «Пропустити»
+    if (/^\s*(немає|нема|ні|невідомо|не знаю|-+|—)\s*\.?\s*$/iu.test(text)) {
+      await advance(s, draft, draft.item_data);
+      return true;
+    }
     await advance(s, draft, { ...draft.item_data, ...oi.parseOwner(text) });
     return true;
   }
@@ -307,7 +319,7 @@ async function handleCallback(userId, s, data, cqId) {
     const pult = require('./../pult');
     if (action === 'mine') await pult.showObjects(userId, s);
     else if (action === 'clients') await pult.showClients(userId, s);
-    else await sendTelegramMessage(s.token, s.chatId, 'Зріз дня приходить сам о 8:30.');
+    else await require('../telegram').sendDayBrief(pool, userId, s);
     return true;
   }
 
@@ -344,7 +356,7 @@ async function handleCallback(userId, s, data, cqId) {
 
   if (action === 'b') {
     await ack();
-    const back = oi.prevStep(draft.step);
+    const back = backStep(draft.step);
     if (!back) { await prompt(s, draft); return true; }
     const cleared = oi.clearStep(item, back);
     await saveDraft(draft.id, cleared, back, null);

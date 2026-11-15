@@ -138,7 +138,13 @@ async function myClients(userId) {
     [userId]
   );
   const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Kyiv' });
-  const needToday = rows.filter(r => (r.data.tasks || []).some(t => !t.done && t.date && t.date <= today)).length;
+  // Дії потребує задача на сьогодні чи прострочена, а також новий лід без
+  // жодної задачі: заявку взяли, а дзвінка ще не поставили.
+  const needToday = rows.filter(r => {
+    const open = (r.data.tasks || []).filter(t => !t.done);
+    if (open.some(t => t.date && t.date <= today)) return true;
+    return Number(r.data.stage) === 0 && !open.length;
+  }).length;
   return { total: rows.length, needToday, items: rows, today };
 }
 

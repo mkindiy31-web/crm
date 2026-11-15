@@ -298,6 +298,63 @@ function addDaysISO(isoDate, days) {
   return d.toISOString().slice(0, 10);
 }
 
+// Що день тримає для одного менеджера: прострочене, сьогоднішні дзвінки й
+// покази, нічиї заявки з сайту, обʼєкти без руху. Той самий зріз іде о 8:30 і
+// на кнопку «Задачі на день». null, коли показувати нічого.
+async function dayBrief(pool, userId, { today, staleDays, freeLeads, title }) {
+  const { rows: clients } = await pool.query(
+    'SELECT id, data FROM clients WHERE manager_id = $1 AND archived_at IS NULL', [userId]
+  );
+  const due = [];
+  const late = [];
+  for (const row of clients) {
+    const c = row.data || {};
+    for (const task of c.tasks || []) {
+      if (task.done || !task.date) continue;
+      const who = c.name || c.phone || 'Клієнт';
+      const what = `${taskWord(task.type)}: ${who}${task.time ? ', ' + task.time : ''}`;
+      if (task.date < today) late.push(what);
+      else if (task.date === today) due.push(what);
+    }
+  }
+  const { rows: stale } = await pool.query(
+    `SELECT count(*)::int n FROM catalog_items
+     WHERE created_by = $1 AND archived_at IS NULL
+       AND coalesce(data->>'status', 'available') = 'available'
+       AND updated_at < now() - ($2 || ' days')::interval`,
+    [userId, String(staleDays)]
+  );
+  if (!due.length && !late.length && !freeLeads && !stale[0].n) return null;
+
+  const lines = [title];
+  if (late.length) {
+    lines.push('', `<b>Прострочено ${late.length}</b>`);
+    for (const x of late.slice(0, 5)) lines.push(x);
+  }
+  if (due.length) {
+    lines.push('', '<b>Сьогодні</b>');
+    for (const x of due.slice(0, 8)) lines.push(x);
+  }
+  if (freeLeads) lines.push('', `Нічиїх заявок із сайту: ${freeLeads}`);
+  if (stale[0].n) lines.push(`Обʼєкти без руху понад ${staleDays} днів: ${stale[0].n}`);
+
+  const rows = [[{ text: 'Мої клієнти', callback_data: 'p:c' }]];
+  if (stale[0].n) rows.push([{ text: 'Показати обʼєкти', callback_data: 'p:o' }]);
+  rows.push([{ text: 'Приховати до завтра', callback_data: 'p:close' }]);
+  return { text: lines.join('\n'), rows };
+}
+
+// Кнопка «Задачі на день»: той самий зріз, що о 8:30, але зараз і на запит.
+async function sendDayBrief(pool, userId, s) {
+  const today = kyivTodayISO();
+  const { days: staleDays } = await automations.getConfig(pool, 'stale-nudge');
+  const { rows: freeLeads } = await pool.query('SELECT count(*)::int n FROM site_leads WHERE taken_by IS NULL');
+  const brief = await dayBrief(pool, userId, { today, staleDays, freeLeads: freeLeads[0].n, title: '<b>Задачі на сьогодні</b>' });
+  if (brief) return sendTelegramKeyboard(s.token, s.chatId, brief.text, brief.rows);
+  return sendTelegramKeyboard(s.token, s.chatId, 'На сьогодні задач немає, прострочених теж.',
+    [[{ text: 'Мої клієнти', callback_data: 'p:c' }]]);
+}
+
 // Once a day at 21:00 Kyiv time, sends each manager a numbered summary of
 // tomorrow's personal to-do items (client tasks already get their own
 // per-item reminders via checkAndNotifyAll, so this stays scoped to the
@@ -338,58 +395,14 @@ async function checkAndSendMorningBrief(pool) {
     );
     if (seen.length) { skipped++; continue; }
 
-    const { rows: clients } = await pool.query(
-      'SELECT id, data FROM clients WHERE manager_id = $1 AND archived_at IS NULL', [user.id]
-    );
-
-    const due = [];
-    const late = [];
-    for (const row of clients) {
-      const c = row.data || {};
-      for (const task of c.tasks || []) {
-        if (task.done || !task.date) continue;
-        const who = c.name || c.phone || 'Клієнт';
-        const what = `${taskWord(task.type)}: ${who}${task.time ? ', ' + task.time : ''}`;
-        if (task.date < today) late.push(what);
-        else if (task.date === today) due.push(what);
-      }
-    }
-
-    const { rows: stale } = await pool.query(
-      `SELECT count(*)::int n FROM catalog_items
-       WHERE created_by = $1 AND archived_at IS NULL
-         AND coalesce(data->>'status', 'available') = 'available'
-         AND updated_at < now() - ($2 || ' days')::interval`,
-      [user.id, String(staleDays)]
-    );
-
     const mark = () => pool.query(
       'INSERT INTO notified_tasks (user_id, task_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
       [user.id, key]
     );
+    const brief = await dayBrief(pool, user.id, { today, staleDays, freeLeads: freeLeads[0].n, title: '<b>Ранок, 8:30</b>' });
+    if (!brief) { await mark(); continue; }
 
-    if (!due.length && !late.length && !freeLeads[0].n && !stale[0].n) {
-      await mark();
-      continue;
-    }
-
-    const lines = ['<b>Ранок, 8:30</b>'];
-    if (late.length) {
-      lines.push('', `<b>Прострочено ${late.length}</b>`);
-      for (const x of late.slice(0, 5)) lines.push(x);
-    }
-    if (due.length) {
-      lines.push('', '<b>Сьогодні</b>');
-      for (const x of due.slice(0, 8)) lines.push(x);
-    }
-    if (freeLeads[0].n) lines.push('', `Нічиїх заявок із сайту: ${freeLeads[0].n}`);
-    if (stale[0].n) lines.push(`Обʼєкти без руху понад ${staleDays} днів: ${stale[0].n}`);
-
-    const rows = [[{ text: 'Мої клієнти', callback_data: 'p:c' }]];
-    if (stale[0].n) rows.push([{ text: 'Показати обʼєкти', callback_data: 'p:o' }]);
-    rows.push([{ text: 'Приховати до завтра', callback_data: 'p:close' }]);
-
-    const ok = await sendTelegramKeyboard(s.token, s.chatId, lines.join('\n'), rows);
+    const ok = await sendTelegramKeyboard(s.token, s.chatId, brief.text, brief.rows);
     if (ok) { sent++; await mark(); }
   }
 
@@ -527,4 +540,6 @@ module.exports = {
   setMyCommands,
   BOT_COMMANDS,
   checkAndSendMorningBrief,
+  sendDayBrief,
+  dayBrief,
 };
