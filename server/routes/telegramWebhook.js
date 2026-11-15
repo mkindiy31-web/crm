@@ -930,23 +930,29 @@ function scheduleFlush(key, userId, settings) {
   const entry = pendingBatches.get(key);
   if (!entry) return;
   clearTimeout(entry.timer);
-  entry.timer = setTimeout(() => {
+  entry.timer = setTimeout(async () => {
     pendingBatches.delete(key);
-    if (key.startsWith('obj:')) {
-      objectDialog.handlePhotos(userId, settings, entry.fileIds)
-        .catch(err => console.error('objectDialog.handlePhotos error:', err));
-      return;
+    // Куди йде пачка, вирішується тут, а не на першому фото: менеджер тисне
+    // «Додати обʼєкт» і одразу кидає альбом, і перші фото приходять раніше,
+    // ніж зʼявилась чернетка обʼєкта. За DEBOUNCE_MS вона вже є.
+    try {
+      const draft = await objectDialog.getDraft(userId);
+      if (draft && !objectIntake.isTerminal(draft.step)) {
+        await objectDialog.handlePhotos(userId, settings, entry.fileIds.slice(0, objectIntake.MAX_OBJECT_PHOTOS));
+        return;
+      }
+      await processBatch(userId, entry.fileIds.slice(0, MAX_PHOTOS));
+    } catch (err) {
+      console.error('photo batch error:', err);
     }
-    processBatch(userId, entry.fileIds).catch(err => console.error('AI intake processBatch error:', err));
   }, DEBOUNCE_MS);
 }
 
 // Listing photos have their own, larger cap: a flat is photographed from every
 // room, and the ten-photo limit for client screenshots would cut the batch
-// without saying so.
-function photoCapFor(key) {
-  return key.startsWith('obj:') ? objectIntake.MAX_OBJECT_PHOTOS : MAX_PHOTOS;
-}
+// without saying so. While the batch gathers, its target is not known yet, so
+// the larger cap applies; the flush trims to the target's own.
+const BATCH_CAP = Math.max(objectIntake.MAX_OBJECT_PHOTOS, MAX_PHOTOS);
 
 // Відповідь на текст чи повідомлення, якого бот не зрозумів: коротко і меню,
 // а не інструкція (екран «Бот не зрозумів повідомлення», 15.11.2026).
@@ -1090,15 +1096,13 @@ router.post('/:userId', async (req, res) => {
     }
 
     const largest = msg.photo[msg.photo.length - 1];
-    const objectDraftForPhotos = await objectDialog.getDraft(userId);
-    const toObject = objectDraftForPhotos && !objectIntake.isTerminal(objectDraftForPhotos.step);
-    const key = `${toObject ? 'obj' : 'cli'}:${userId}:${msg.media_group_id || 'single-' + msg.message_id}`;
+    const key = `ph:${userId}:${msg.media_group_id || 'single-' + msg.message_id}`;
     let entry = pendingBatches.get(key);
     if (!entry) {
       entry = { userId, timer: null, fileIds: [] };
       pendingBatches.set(key, entry);
     }
-    if (entry.fileIds.length < photoCapFor(key)) entry.fileIds.push(largest.file_id);
+    if (entry.fileIds.length < BATCH_CAP) entry.fileIds.push(largest.file_id);
     scheduleFlush(key, userId, s);
   } catch (err) {
     console.error('Telegram webhook error:', err);
