@@ -104,8 +104,10 @@ router.put('/:id', async (req, res) => {
 });
 
 router.delete('/:id', async (req, res) => {
-  await pool.query('DELETE FROM catalog_items WHERE id = $1', [req.params.id]);
+  const { rows } = await pool.query('DELETE FROM catalog_items WHERE id = $1 RETURNING data', [req.params.id]);
   res.status(204).end();
+  // Видалений у срм обʼєкт не лишається на вітрині сайту (16.11.2026).
+  if (rows.length) siteSync.withdrawListing(req.params.id, rows[0].data).catch(err => console.error('siteSync withdraw failed:', err));
 });
 
 module.exports = router;

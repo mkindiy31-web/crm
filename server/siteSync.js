@@ -129,13 +129,22 @@ function photoKey(p) {
   return crypto.createHash('sha1').update(p).digest('hex').slice(0, 24);
 }
 
+function isSiteUrl(p) {
+  return typeof p === 'string' && /^https?:\/\//.test(p);
+}
+
 async function syncPhotos(crmId, data) {
   const photos = Array.isArray(data.photos) ? data.photos : [];
-  // Змішані чи лише адреси: галерею на сайті не чіпаємо, вона там своя.
-  if (!photos.length || !photos.every(isDataPhoto)) return { ok: true, ids: null };
+  if (!photos.length) return { ok: true, ids: null };
+  // Обʼєкт із сайту несе фото адресами медіатеки. Нові, додані в срм, вантажаться як завжди,
+  // а адреси сайт сам перекладає на свої вкладення (поле photoRefs). Інакше додане чи
+  // видалене в срм фото на сайт не доходило (16.11.2026).
+  const mixed = !photos.every(isDataPhoto);
+  if (mixed && !photos.every(p => isDataPhoto(p) || isSiteUrl(p))) return { ok: true, ids: null };
   const known = { ...(data.sitePhotos || {}) };
   const ids = [];
   for (const p of photos) {
+    if (mixed && isSiteUrl(p)) { ids.push(p); continue; }
     const key = photoKey(p);
     if (!known[key]) {
       const res = await postToSite(
@@ -149,7 +158,7 @@ async function syncPhotos(crmId, data) {
     }
     ids.push(known[key]);
   }
-  return { ok: true, ids };
+  return mixed ? { ok: true, ids: null, refs: ids } : { ok: true, ids };
 }
 
 // Логін менеджера (прізвище): сайт ставить його автором запису.
@@ -166,6 +175,7 @@ async function sendListing(crmId, data) {
   if (agent) payload.item.agent = agent;
   if (!ph.ok) return { res: ph, payload };
   if (ph.ids) payload.item.photoIds = ph.ids;
+  else if (ph.refs) payload.item.photoRefs = ph.refs;
   return { res: await postToSite(payload), payload };
 }
 
@@ -192,6 +202,18 @@ async function pushListing(crmId, data) {
     return res;
   }
   await enqueue(crmId, payload, res.error);
+  return res;
+}
+
+// Обʼєкт видалено в срм: сайт знімає його з вітрини (статус «Знято»), запис і фото лишаються
+// в медіатеці. Незавершене в черзі скасовується, щоб не опублікувати видалене. Обʼєкт, якого
+// на сайті ще немає, сайту не стосується (16.11.2026).
+async function withdrawListing(crmId, data) {
+  await pool.query("UPDATE site_queue SET status = 'cancelled' WHERE crm_id = $1 AND status = 'pending'", [crmId]);
+  if (!siteConfigured() || !siteIdOf(crmId, data || {})) return { ok: false, skipped: true };
+  const payload = toSitePayload(crmId, { ...(data || {}), status: 'withdrawn' });
+  const res = await postToSite(payload);
+  if (!res.ok && !res.permanent) await enqueue(crmId, payload, res.error);
   return res;
 }
 
@@ -234,4 +256,4 @@ async function drain(limit = 20) {
   return { sent, pending, failed };
 }
 
-module.exports = { pushListing, waitsForPhotos, drain, toSitePayload, siteIdOf, siteLinkOf, siteConfigured, syncPhotos, isDataPhoto, BACKOFF };
+module.exports = { pushListing, withdrawListing, waitsForPhotos, drain, toSitePayload, siteIdOf, siteLinkOf, siteConfigured, syncPhotos, isDataPhoto, BACKOFF };
