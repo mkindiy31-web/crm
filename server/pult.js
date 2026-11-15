@@ -10,7 +10,8 @@ const { pool } = require('./db');
 const { STAGES, DEAL_STAGE_ID, commissionOf } = require('./stages');
 const { addHistory, appendNote, stageLabel, dateUA, timeUA, objectStatusLabel, roomsLabel, areaLabel, genitiveName } = require('./cardFormat');
 const siteSync = require('./siteSync');
-const { sendTelegramMessage, sendTelegramKeyboard, answerCallbackQuery, taskWord, crmLink } = require('./telegram');
+const { sendTelegramMessage, sendTelegramKeyboard, sendTelegramPhoto, answerCallbackQuery, taskWord, crmLink } = require('./telegram');
+const crypto = require('crypto');
 
 const SHOWN = 3;            // три позиції в списку, решта за «Показати всі N»
 // Строк живе в реєстрі автоматизацій: там його і міняють, тут лише значення
@@ -126,7 +127,7 @@ function objectCardText(row) {
 }
 
 // Обʼєкт без жодного фото, якого ще немає на сайті: картка пропонує «Додати фото».
-// Більше фото до обʼєкта, що вже має фото, додається в срм (екран 15.11.2026).
+// Обʼєкт із фото має «Фото · N»: додати, змінити головне, прибрати (екран 16.11.2026).
 function needsPhotos(row) {
   const d = row.data || {};
   return !(d.photos || []).length && !siteSync.siteIdOf(row.id, d);
@@ -144,7 +145,9 @@ function objectCardRows(row) {
   // Дороги з картки: сторінка на сайті (лише в опублікованого і «Вільно») і
   // та сама картка в срм.
   const links = [];
+  const photoCount = (d.photos || []).length;
   if (needsPhotos(row)) links.push({ text: 'Додати фото', callback_data: `p:ph:${row.id}` });
+  else if (photoCount) links.push({ text: `Фото · ${photoCount}`, callback_data: `p:fo:${row.id}` });
   const site = siteSync.siteLinkOf(row.id, d);
   if (/^https:\/\//.test(site)) links.push({ text: 'На сайті', url: site });
   const crm = crmLink('obyekt', row.id);
@@ -423,8 +426,15 @@ async function handlePultCallback(userId, s, data, cqId) {
     // Дивитись картку може кожен: підбір веде і на чужі обʼєкти, база спільна.
     // Змінити ціну чи зняти з продажу далі може лише той, хто завів.
     await ack();
+    // Альбом, кинутий на картці свого обʼєкта з фото, бот спершу питає, куди його (екран 16.11.2026).
+    if ((row.data?.photos || []).length && !(await mayTouchObject(userId, role, row))) await setWaiting(userId, 'card', id);
+    else await clearWaiting(userId);
     await sendTelegramKeyboard(s.token, s.chatId, objectCardText(row), objectCardRows(row));
     return true;
+  }
+
+  if (['fo', 'fm', 'fr', 'fmk', 'frk', 'fry', 'fa', 'fs'].includes(action)) {
+    return handlePhotoAction(userId, s, role, action, parts, ack);
   }
 
   if (action === 'back-price') {
@@ -542,6 +552,160 @@ async function handlePultCallback(userId, s, data, cqId) {
 // а скріншоти клієнтів, і мають іти своїм шляхом.
 const PHOTO_WAIT_MS = 30 * 60 * 1000;
 
+// ── фото обʼєкта з фото (екран 16.11.2026) ─────────────────────────────────
+
+function objectName(row) {
+  const d = row.data || {};
+  const head = [d.propType, d.district].filter(Boolean).join(', ') || d.title || 'Обʼєкт';
+  return d.area ? `${head} · ${areaLabel(d.area)}` : head;
+}
+
+// Відбиток фото в кнопці: між показом номерів і натиском фото могли змінитись.
+function photoTag(p) {
+  return crypto.createHash('sha1').update(String(p)).digest('hex').slice(0, 6);
+}
+
+// Розбір скріншотів клієнта живе у вебхуку; він реєструє його тут, щоб альбом,
+// який менеджер назвав скріншотами, пішов туди без кругового require.
+let screenshotHandler = null;
+function setScreenshotHandler(fn) { screenshotHandler = fn; }
+
+async function sitePhrase(rowId, data) {
+  const res = await siteSync.pushListing(rowId, data).catch(err => {
+    console.error('pult: site push failed:', err);
+    return { ok: false };
+  });
+  if (res.ok) return 'На сайті оновив.';
+  if (res.skipped) return 'Канал до сайту ще не налаштований.';
+  if (res.noPhotos) return '';
+  return 'Сайт зараз не відповідає, зміна в черзі і дійде сама.';
+}
+
+async function saveObjectPhotos(row, photos) {
+  const data = { ...(row.data || {}), photos };
+  await pool.query('UPDATE catalog_items SET data = $1, updated_at = now() WHERE id = $2', [data, row.id]);
+  return data;
+}
+
+async function showPhotos(userId, s, row) {
+  const { photoSheet, PER_SHEET } = require('./photoSheet');
+  const photos = row.data?.photos || [];
+  const more = photos.length > PER_SHEET ? `\nНа аркуші перші ${PER_SHEET}, решта у «Змінити головне» за кнопкою «Ще».` : '';
+  const text = `У «${esc(objectName(row))}» ${photos.length} фото, головне перше. Нові можна просто кинути сюди.${more}`;
+  const rows = [
+    [{ text: 'Змінити головне', callback_data: `p:fm:${row.id}` }, { text: 'Прибрати фото', callback_data: `p:fr:${row.id}` }],
+    [{ text: 'Назад до картки', callback_data: `p:o:${row.id}` }],
+  ];
+  await setWaiting(userId, 'photos', row.id);
+  const sheet = await photoSheet(photos, 0).catch(err => { console.error('pult: photo sheet failed:', err); return null; });
+  if (sheet && await sendTelegramPhoto(s.token, s.chatId, sheet, text, rows)) return;
+  await sendTelegramKeyboard(s.token, s.chatId, text, rows);
+}
+
+// Номери кнопками по пʼять у ряд; сторінка це десяток фото, як на аркуші.
+async function pickNumber(s, row, kind, page) {
+  const { photoSheet, PER_SHEET } = require('./photoSheet');
+  const photos = row.data?.photos || [];
+  const from = page * PER_SHEET;
+  const nums = [];
+  for (let i = from; i < Math.min(photos.length, from + PER_SHEET); i++) {
+    if (kind === 'fm' && i === 0) continue; // перше вже головне
+    nums.push({ text: String(i + 1), callback_data: `p:${kind}k:${row.id}:${i + 1}:${photoTag(photos[i])}` });
+  }
+  const rows = [];
+  for (let i = 0; i < nums.length; i += 5) rows.push(nums.slice(i, i + 5));
+  const nav = [];
+  if (from + PER_SHEET < photos.length) nav.push({ text: 'Ще', callback_data: `p:${kind}:${row.id}:${page + 1}` });
+  nav.push({ text: 'Назад', callback_data: `p:fo:${row.id}` });
+  rows.push(nav);
+  const text = kind === 'fm' ? 'Яке фото зробити головним?' : 'Яке фото прибрати?';
+  if (page > 0) {
+    const sheet = await photoSheet(photos, page).catch(() => null);
+    if (sheet && await sendTelegramPhoto(s.token, s.chatId, sheet, text, rows)) return;
+  }
+  await sendTelegramKeyboard(s.token, s.chatId, text, rows);
+}
+
+async function handlePhotoAction(userId, s, role, action, parts, ack) {
+  if (action === 'fs') {
+    const state = await getWaiting(userId);
+    await ack();
+    await clearWaiting(userId);
+    if (!state || state.waiting !== 'album') return true;
+    const fileIds = String(state.target).split('|')[1].split(',').filter(Boolean);
+    if (screenshotHandler) await screenshotHandler(userId, fileIds);
+    return true;
+  }
+  const id = parts[2];
+  const row = await objectCard(id);
+  const deny = await mayTouchObject(userId, role, row);
+  if (deny) { await ack(deny); await sendTelegramMessage(s.token, s.chatId, deny); return true; }
+  const photos = Array.isArray(row.data?.photos) ? row.data.photos : [];
+  const back = { text: 'Назад до картки', callback_data: `p:o:${id}` };
+
+  if (action === 'fa') {
+    const state = await getWaiting(userId);
+    await ack();
+    if (!state || state.waiting !== 'album' || String(state.target).split('|')[0] !== id) {
+      await sendTelegramKeyboard(s.token, s.chatId, 'Ці фото вже не чекають. Кинь їх ще раз.', [[back]]);
+      return true;
+    }
+    const fileIds = String(state.target).split('|')[1].split(',').filter(Boolean);
+    await appendPhotos(userId, s, row, fileIds);
+    return true;
+  }
+  if (action === 'fo') { await ack(); await showPhotos(userId, s, row); return true; }
+  if (action === 'fm' || action === 'fr') {
+    await ack();
+    await pickNumber(s, row, action, parseInt(parts[3], 10) || 0);
+    return true;
+  }
+
+  // Номер із відбитком: фото на цьому місці мусить бути те саме, що й на аркуші.
+  const k = parseInt(parts[3], 10);
+  const tag = parts[4];
+  if (!(k >= 1 && k <= photos.length) || photoTag(photos[k - 1]) !== tag) {
+    await ack();
+    await sendTelegramKeyboard(s.token, s.chatId, 'Фото тим часом змінились. Відкрий «Фото» ще раз.',
+      [[{ text: `Фото · ${photos.length}`, callback_data: `p:fo:${id}` }, back]]);
+    return true;
+  }
+
+  if (action === 'fmk') {
+    const next = [photos[k - 1], ...photos.filter((_, i) => i !== k - 1)];
+    const data = await saveObjectPhotos(row, next);
+    const site = await sitePhrase(id, data);
+    await ack('Головне фото ' + k);
+    await sendTelegramKeyboard(s.token, s.chatId, `Головне тепер фото ${k}. ${site}`.trim(),
+      [[{ text: `Фото · ${next.length}`, callback_data: `p:fo:${id}` }, back]]);
+    return true;
+  }
+  if (action === 'frk') {
+    await ack();
+    if (photos.length === 1 && siteSync.siteIdOf(id, row.data || {})) {
+      await sendTelegramKeyboard(s.token, s.chatId,
+        'Це останнє фото, без нього обʼєкт не стоїть на вітрині сайту. Спершу додай інше.',
+        [[{ text: `Фото · 1`, callback_data: `p:fo:${id}` }, back]]);
+      return true;
+    }
+    await sendTelegramKeyboard(s.token, s.chatId, `Прибрати фото ${k}?`,
+      [[{ text: 'Так, прибрати', callback_data: `p:fry:${id}:${k}:${tag}` }, { text: 'Ні', callback_data: `p:fo:${id}` }]]);
+    return true;
+  }
+  if (action === 'fry') {
+    if (photos.length === 1 && siteSync.siteIdOf(id, row.data || {})) { await ack(); return true; }
+    const next = photos.filter((_, i) => i !== k - 1);
+    const data = await saveObjectPhotos(row, next);
+    const site = await sitePhrase(id, data);
+    await ack('Прибрав');
+    await sendTelegramKeyboard(s.token, s.chatId, `Прибрав фото ${k}, лишилось ${next.length}. ${site}`.trim(),
+      [[{ text: `Фото · ${next.length}`, callback_data: `p:fo:${id}` }, back]]);
+    return true;
+  }
+  await ack();
+  return true;
+}
+
 async function photoWaiting(userId) {
   const state = await getWaiting(userId);
   if (!state || state.waiting !== 'photos') return null;
@@ -555,13 +719,32 @@ async function photoWaiting(userId) {
 // Пачка фото після «Додати фото». false, якщо пульт фото не чекає: тоді пачка
 // йде далі, в обʼєкт, що додається, чи в розбір скріншотів.
 async function handlePultPhotos(userId, s, fileIds) {
+  const card = await getWaiting(userId);
+  if (card && card.waiting === 'card') {
+    if (Date.now() - new Date(card.updated_at).getTime() > PHOTO_WAIT_MS) { await clearWaiting(userId); return false; }
+    // Почата чернетка обʼєкта важливіша за картку, з якої менеджер пішов «Додати обʼєкт».
+    const { rows: dr } = await pool.query('SELECT step FROM pending_objects WHERE user_id = $1 LIMIT 1', [userId]);
+    const { isTerminal } = require('./objectIntake');
+    if (dr.length && !isTerminal(dr[0].step)) return false;
+    const row = await objectCard(card.target);
+    if (!row) { await clearWaiting(userId); return false; }
+    await setWaiting(userId, 'album', `${row.id}|${fileIds.join(',')}`);
+    await sendTelegramKeyboard(s.token, s.chatId, `Додати ці ${fileIds.length} фото до «${esc(objectName(row))}»?`, [
+      [{ text: 'Додати до обʼєкта', callback_data: `p:fa:${row.id}` }],
+      [{ text: 'Це скріншоти клієнта', callback_data: 'p:fs' }],
+    ]);
+    return true;
+  }
   const state = await photoWaiting(userId);
   if (!state) return false;
   const { role } = await userRole(userId);
   const row = await objectCard(state.target);
   const deny = await mayTouchObject(userId, role, row);
   if (deny) { await clearWaiting(userId); await sendTelegramMessage(s.token, s.chatId, deny); return true; }
+  return appendPhotos(userId, s, row, fileIds);
+}
 
+async function appendPhotos(userId, s, row, fileIds) {
   const { photosFromTelegram } = require('./routes/objectPublish');
   const { MAX_OBJECT_PHOTOS } = require('./objectIntake');
   const d = row.data || {};
@@ -575,6 +758,16 @@ async function handlePultPhotos(userId, s, fileIds) {
   const data = { ...d, photos: have.concat(got.photos) };
   await pool.query('UPDATE catalog_items SET data = $1, updated_at = now() WHERE id = $2', [data, row.id]);
   await clearWaiting(userId);
+  if (have.length) {
+    // Обʼєкт уже з фото: нові в кінець, головне те саме (екран 16.11.2026).
+    const site = await sitePhrase(row.id, data);
+    const lostMore = got.lost ? ` ${got.lost} фото Telegram не віддав.` : '';
+    await sendTelegramKeyboard(s.token, s.chatId,
+      `Додав ${got.photos.length} фото, тепер ${data.photos.length}. ${site}${lostMore}`.replace(/\s+$/, ''),
+      [[{ text: `Фото · ${data.photos.length}`, callback_data: `p:fo:${row.id}` },
+        { text: 'Назад до картки', callback_data: `p:o:${row.id}` }]]);
+    return true;
+  }
 
   const res = await siteSync.pushListing(row.id, data).catch(err => {
     console.error('pult: site push failed:', err);
@@ -600,6 +793,16 @@ async function handlePultText(userId, s, text) {
   const state = await getWaiting(userId);
   if (!state) return false;
   const { role } = await userRole(userId);
+
+  if (state.waiting === 'card') { await clearWaiting(userId); return false; }
+  if (state.waiting === 'album') {
+    const objId = String(state.target).split('|')[0];
+    await sendTelegramKeyboard(s.token, s.chatId, 'Спершу скажи, куди фото: до обʼєкта чи це скріншоти клієнта.', [
+      [{ text: 'Додати до обʼєкта', callback_data: `p:fa:${objId}` }],
+      [{ text: 'Це скріншоти клієнта', callback_data: 'p:fs' }],
+    ]);
+    return true;
+  }
 
   if (state.waiting === 'photos') {
     if (!(await photoWaiting(userId))) return false;
@@ -694,6 +897,7 @@ function addDays(iso, days) {
 
 module.exports = {
   handlePultCallback, handlePultText, handlePultPhotos, showObjects, showClients, needsPhotos, PHOTO_WAIT_MS,
+  setScreenshotHandler, photoTag,
   mayTouchObject, parseWhen,
   SHOWN, STALE_DAYS,
   money, daysSince, esc,

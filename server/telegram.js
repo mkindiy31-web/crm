@@ -53,6 +53,22 @@ async function sendTelegramDocument(token, chatId, filename, buffer, caption) {
   }
 }
 
+// Картинка з підписом і кнопками: аркуш фото обʼєкта з номерами (16.11.2026).
+async function sendTelegramPhoto(token, chatId, buffer, caption, rows) {
+  if (!token || !chatId || !buffer) return false;
+  try {
+    const form = new FormData();
+    form.append('chat_id', String(chatId));
+    if (caption) { form.append('caption', String(caption).slice(0, 1000)); form.append('parse_mode', 'HTML'); }
+    if (rows) form.append('reply_markup', JSON.stringify({ inline_keyboard: rows }));
+    form.append('photo', new Blob([buffer], { type: 'image/jpeg' }), 'foto.jpg');
+    const r = await fetch(`${API}/bot${token}/sendPhoto`, { method: 'POST', body: form });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function sendTelegramKeyboard(token, chatId, text, rows) {
   if (!token || !chatId) return false;
   try {
@@ -521,6 +537,7 @@ module.exports = {
   publicBase,
   crmLink,
   sendTelegramDocument,
+  sendTelegramPhoto,
   sendTelegramMessage,
   sendTelegramKeyboard,
   answerCallbackQuery,

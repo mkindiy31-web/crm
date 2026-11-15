@@ -926,6 +926,9 @@ async function processTextUpdate(userId, text) {
   }
 }
 
+// Альбом, який менеджер на картці обʼєкта назвав скріншотами клієнта, іде в розбір.
+pult.setScreenshotHandler((userId, fileIds) => processBatch(userId, fileIds.slice(0, MAX_PHOTOS)));
+
 function scheduleFlush(key, userId, settings) {
   const entry = pendingBatches.get(key);
   if (!entry) return;
