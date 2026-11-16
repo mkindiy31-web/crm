@@ -3,10 +3,10 @@ const express = require('express');
 const { pool } = require('../db');
 const { normalizePhone } = require('../phone');
 const { upsertClientAndNotify } = require('../clientOps');
-const { sendTelegramMessage, sendTelegramKeyboard, answerCallbackQuery, getFilePath, downloadFileAsBase64, TASK_LABELS, addDaysISO, kyivTodayISO } = require('../telegram');
+const { sendTelegramMessage, sendTelegramKeyboard, answerCallbackQuery, getFilePath, downloadFileAsBase64, TASK_LABELS, addDaysISO, kyivTodayISO, taskWord, taskWhenWord } = require('../telegram');
 const { extractBuyers, extractTextUpdate, extractPersonalTodo, extractClientTaskByName, extractNewClientFromText, extractBudgetAndNeed, extractTaskFromText } = require('../aiIntake');
 const { STAGES, DEAL_STAGE_ID } = require('../stages');
-const { stageLabel } = require('../cardFormat');
+const { stageLabel, genitiveName } = require('../cardFormat');
 const objectDialog = require('./objectDialog');
 const objectIntake = require('../objectIntake');
 const leads = require('../leads');
@@ -179,6 +179,14 @@ function sourceKeyboardRows(cbPrefix, id) {
 
 async function sendSourcePrompt(s, row, isReminder) {
   const c = row.client_data;
+  // Клієнт, якого менеджер написав текстом (екран 16.11.2026): одне коротке питання.
+  if (c.origin === 'text') {
+    const verb = isFemaleName(c.name) ? 'прийшла' : 'прийшов';
+    const who = firstNameOf(c.name) ? escapeHtmlTg(firstNameOf(c.name)) : `клієнт <b>${escapeHtmlTg(c.name)}</b>`;
+    await sendTelegramKeyboard(s.token, s.chatId, `${isReminder ? 'Нагадую: з' : 'З'}відки ${verb} ${who}?`,
+      sourceKeyboardRows('src', row.id));
+    return;
+  }
   const prefix = isReminder
     ? '⏰ Нагадування — ще не заповнено.\n\n'
     : '🆕 Новий клієнт розпізнаний AI — ';
@@ -196,18 +204,89 @@ function escapeHtmlTg(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-async function sendDetailsPrompt(s, row, isReminder) {
-  const c = row.client_data;
-  const prefix = isReminder ? '⏰ Нагадування — ' : `✅ Джерело: ${escapeHtmlTg(c.source)}\n`;
-  await sendTelegramMessage(s.token, s.chatId,
-    `${prefix}Напишіть одним повідомленням: який бюджет і що шукає клієнт <b>${escapeHtmlTg(c.name)}</b>?\n\n(наприклад: "шукає 2-кімнатну в центрі, бюджет 60-70 тисяч")`);
+// ── новий клієнт: імена, підписи, питання (екран 16.11.2026, klient-tekstom-bot.html) ──
+
+function firstNameOf(name) {
+  const w = String(name == null ? '' : name).trim().split(/\s+/)[0] || '';
+  return /^[А-ЩЬЮЯҐЄІЇа-щьюяґєіїʼ'’-]{2,}$/u.test(w) && !/^(клієнт|без)/iu.test(w) ? w : '';
+}
+// Чоловічі імена на -а, -я, які інакше пішли б за жіночі.
+const MALE_A = new Set(['микола', 'ілля', 'кузьма', 'сава', 'лука', 'фома', 'нікіта', 'никита', 'хома', 'юда']);
+function isFemaleName(name) {
+  const w = firstNameOf(name).toLowerCase();
+  return /[ая]$/u.test(w) && !MALE_A.has(w);
+}
+// «Ірину», «Олега»: знахідний відмінок імені. Порожньо, коли певно не відмінюється.
+function accusativeFirst(name) {
+  const w = firstNameOf(name);
+  if (!w) return '';
+  if (isFemaleName(name)) return w.replace(/а$/u, 'у').replace(/я$/u, 'ю');
+  const g = genitiveName(w);
+  return g === 'клієнта' ? '' : g;
+}
+function genitiveFirst(name) {
+  const w = firstNameOf(name);
+  const g = w ? genitiveName(w) : 'клієнта';
+  return g === 'клієнта' ? '' : g;
+}
+function phoneLabel(phone) {
+  const d = String(phone || '').replace(/\D/g, '').replace(/^380/, '0');
+  return d.length === 10 ? `${d.slice(0, 3)} ${d.slice(3, 6)} ${d.slice(6, 8)} ${d.slice(8)}` : String(phone || '');
+}
+function usd(n) { return Number(n).toLocaleString('uk-UA').replace(/\s/g, ' ') + ' $'; }
+function budgetLabel(c) {
+  const min = Number(c.budgetMin) || 0, max = Number(c.budgetMax) || 0;
+  if (min && max) return `${usd(min)} - ${usd(max)}`;
+  if (max) return `до ${usd(max)}`;
+  if (min) return `від ${usd(min)}`;
+  return '';
+}
+// «Однокімнатна, Пасічна, до 50 000 $»: що шукає і бюджет одним рядком.
+function needLine(c) {
+  const parts = [c.clientRequest, budgetLabel(c)].filter(Boolean);
+  const line = parts.join(', ');
+  return line ? line.charAt(0).toUpperCase() + line.slice(1) : '';
+}
+function hasDetails(c) {
+  return Boolean(String(c.clientRequest || '').trim() || Number(c.budgetMin) || Number(c.budgetMax));
 }
 
-async function sendTaskPrompt(s, row, isReminder) {
+const SKIP_ROW = id => [{ text: 'Пропустити, допишу в срм', callback_data: `ni:skip:${id}` }];
+function firstCallRows(id) {
+  return [
+    [{ text: 'Через годину', callback_data: `ni:t:${id}:h1` }, { text: 'Завтра 10:00', callback_data: `ni:t:${id}:t1` }],
+    [{ text: 'Післязавтра 10:00', callback_data: `ni:t:${id}:t2` }, { text: 'Інший час', callback_data: `ni:t:${id}:x` }],
+  ];
+}
+
+// mode: 'ask' вперше, 'remind' щогодини, 'back' після чужого повідомлення посеред питань.
+async function sendDetailsPrompt(s, row, isReminder, mode = isReminder ? 'remind' : 'ask') {
   const c = row.client_data;
-  const prefix = isReminder ? '⏰ Нагадування — ' : '✅ Прийнято\n';
-  await sendTelegramMessage(s.token, s.chatId,
-    `${prefix}Останній крок: яке перше завдання поставити для <b>${escapeHtmlTg(c.name)}</b>?\n\n(наприклад: "подзвонити завтра о 15:00" або "зателефонувати ввечері")`);
+  const gen = genitiveFirst(c.name);
+  let text;
+  if (mode === 'back') {
+    text = gen ? `Повертаюсь до ${escapeHtmlTg(gen)}: який бюджет і що шукає?`
+      : `Повертаюсь до клієнта <b>${escapeHtmlTg(c.name)}</b>: який бюджет і що шукає?`;
+  } else {
+    text = `${mode === 'remind' ? 'Нагадую. ' : ''}Який бюджет і що шукає <b>${escapeHtmlTg(c.name)}</b>? ` +
+      'Одним повідомленням, наприклад «двокімнатна в центрі до 70 тисяч».';
+  }
+  await sendTelegramKeyboard(s.token, s.chatId, text, [SKIP_ROW(row.id)]);
+}
+
+async function sendTaskPrompt(s, row, isReminder, mode = isReminder ? 'remind' : 'ask') {
+  const c = row.client_data;
+  const dat = pult.dativeName(c.name);
+  const gen = genitiveFirst(c.name);
+  let text;
+  if (mode === 'back') {
+    text = gen ? `Повертаюсь до ${escapeHtmlTg(gen)}: коли перший дзвінок?`
+      : `Повертаюсь до клієнта <b>${escapeHtmlTg(c.name)}</b>: коли перший дзвінок?`;
+  } else {
+    const who = dat ? escapeHtmlTg(dat) : `клієнту <b>${escapeHtmlTg(c.name)}</b>`;
+    text = `${mode === 'remind' ? 'Нагадую: к' : 'К'}оли перший дзвінок ${who}?`;
+  }
+  await sendTelegramKeyboard(s.token, s.chatId, text, firstCallRows(row.id));
 }
 
 // Sends the next outstanding question for this manager's oldest unfinished
@@ -224,11 +303,12 @@ async function advancePendingIntakeQueue(userId) {
   if (!s.enabled || !s.token || !s.chatId) return;
 
   const { rows } = await pool.query(
-    'SELECT * FROM pending_intakes WHERE user_id = $1 ORDER BY created_at ASC LIMIT 1',
+    "SELECT * FROM pending_intakes WHERE user_id = $1 AND step <> 'offer' ORDER BY created_at ASC LIMIT 1",
     [userId]
   );
   const row = rows[0];
-  if (!row || row.prompted_at) return;
+  if (!row) { await advanceSourceFixQueue(userId); return; } // новий клієнт у срм: тепер можна питати про джерело інших
+  if (row.prompted_at) return;
 
   if (row.step === 'source') await sendSourcePrompt(s, row, false);
   else if (row.step === 'details') await sendDetailsPrompt(s, row, false);
@@ -267,9 +347,11 @@ async function handleSourceSelection(userId, pendingId, idx, callbackQueryId, to
   if (!row) { await answerCallbackQuery(token, callbackQueryId, 'Вже оброблено', true); return; }
 
   const updatedData = { ...row.client_data, source: opt.key };
+  // Що вже є з першого повідомлення, бот не перепитує.
+  const next = hasDetails(updatedData) ? 'task' : 'details';
   await pool.query(
-    "UPDATE pending_intakes SET client_data = $1, step = 'details', prompted_at = NULL WHERE id = $2",
-    [updatedData, pendingId]
+    "UPDATE pending_intakes SET client_data = $1, step = $3, prompted_at = NULL WHERE id = $2",
+    [updatedData, pendingId, next]
   );
   await answerCallbackQuery(token, callbackQueryId, `Обрано: ${opt.key}`);
   await advancePendingIntakeQueue(userId);
@@ -285,6 +367,11 @@ async function advanceSourceFixQueue(userId) {
   );
   const s = userRows[0]?.tg_settings || {};
   if (!s.enabled || !s.token || !s.chatId) return;
+
+  // Одне питання за раз: про джерело інших бот спитає, коли новий клієнт уже в срм.
+  const { rows: busy } = await pool.query(
+    "SELECT 1 FROM pending_intakes WHERE user_id = $1 AND step <> 'offer' LIMIT 1", [userId]);
+  if (busy.length) return;
 
   // Skip (and clear out) any queued row whose client no longer needs asking —
   // deleted/archived, already got a source some other way, or the deal
@@ -367,6 +454,7 @@ async function checkAndRemindSourceFixes(pool) {
     JOIN users u ON u.id = psf.user_id AND u.active = true
     WHERE psf.prompted_at IS NOT NULL
       AND COALESCE(psf.last_reminded_at, psf.prompted_at) <= now() - interval '1 day'
+      AND NOT EXISTS (SELECT 1 FROM pending_intakes pi WHERE pi.user_id = psf.user_id AND pi.step <> 'offer')
   `);
   for (const row of rows) {
     const s = row.tg_settings || {};
@@ -381,6 +469,25 @@ async function checkAndRemindSourceFixes(pool) {
 // then moves on to the final mandatory step (first task) instead of saving
 // yet. Any text at all completes this step — a parsing miss just means the
 // budget comes back empty, never blocks the manager a second time.
+// Бюджет окремим полем, тому з опису потреби він прибирається, інакше в підсумку двічі.
+function withoutBudget(request, info) {
+  if (!request || !(info.budgetMin || info.budgetMax)) return request;
+  return request.replace(/[,;]?\s*(?:з\s+)?бюджет\p{L}*[^,;.]*/giu, '').replace(/[,;\s]+$/u, '').trim() || request;
+}
+
+// Відповідь на «Коли перший дзвінок?»: дата й час без іншого типу задачі
+// розбираються тим самим розбором, що в задачах (минулого не ставить), решта йде в ШІ.
+async function handleFirstCallAnswer(userId, s, row, text) {
+  const when = pult.parseWhen(text);
+  if (when && !/огляд|показ|консульт|підб[іи]р|оформлен|зустр[іi]ч/iu.test(text)) {
+    const why = pult.pastReason(when);
+    if (why) { await sendTelegramMessage(s.token, s.chatId, why); return; }
+    await finalizePendingIntake(userId, row, text, { type: 'call', date: when.date, time: when.time });
+    return;
+  }
+  await finalizePendingIntake(userId, row, text);
+}
+
 async function handleDetailsAnswer(userId, row, text) {
   let info = { clientRequest: text.trim(), budgetMin: 0, budgetMax: 0 };
   try {
@@ -391,7 +498,7 @@ async function handleDetailsAnswer(userId, row, text) {
 
   const updatedData = {
     ...row.client_data,
-    clientRequest: info.clientRequest || row.client_data.clientRequest || '',
+    clientRequest: withoutBudget(info.clientRequest, info) || row.client_data.clientRequest || '',
     budgetMin: info.budgetMin || '',
     budgetMax: info.budgetMax || '',
   };
@@ -407,7 +514,7 @@ async function handleDetailsAnswer(userId, row, text) {
 // always returns a usable date, defaulting to tomorrow, so this never blocks
 // on a vague answer), attaches the task, and only now actually writes the
 // client into `clients`.
-async function finalizePendingIntake(userId, row, text) {
+async function finalizePendingIntake(userId, row, text, taskOverride) {
   const { rows: userRows } = await pool.query(
     'SELECT id, display_name, tg_settings FROM users WHERE id = $1 AND active = true',
     [userId]
@@ -417,9 +524,12 @@ async function finalizePendingIntake(userId, row, text) {
   const s = user.tg_settings || {};
   const reqUser = { id: user.id, displayName: user.display_name };
 
-  const taskInfo = await extractTaskFromText(text);
-  const task = { id: uid(), type: taskInfo.type, date: taskInfo.date, time: taskInfo.time, note: taskInfo.note, done: false };
-  const c = { ...row.client_data, tasks: [task] };
+  // Кнопка («Завтра 10:00») дає дзвінок без розбору ШІ; текст розбирається, як і раніше.
+  const taskInfo = taskOverride || await extractTaskFromText(text);
+  const task = { id: uid(), type: taskInfo.type, date: taskInfo.date, time: taskInfo.time || '', note: taskInfo.note || '', done: false };
+  const { origin, ...data } = row.client_data;
+  // Дзвінок, названий уже в першому повідомленні, не губиться.
+  const c = { ...data, tasks: [...(Array.isArray(data.tasks) ? data.tasks : []), task] };
 
   try {
     const client = await pool.connect();
@@ -436,15 +546,20 @@ async function finalizePendingIntake(userId, row, text) {
 
     await pool.query('DELETE FROM pending_intakes WHERE id = $1', [row.id]);
 
-    const budgetLine = (c.budgetMin || c.budgetMax)
-      ? `\n💰 Бюджет: ${[c.budgetMin, c.budgetMax].filter(Boolean).join('–')} $`
-      : '';
-    const taskLabel = TASK_LABELS[task.type] || task.type;
-    await sendTelegramMessage(s.token, s.chatId,
-      `✅ Клієнта остаточно додано в CRM: <b>${escapeHtmlTg(c.name)}</b> (${escapeHtmlTg(c.phone)})\n📍 Джерело: ${escapeHtmlTg(c.source)}${budgetLine}\n🏠 Потреба: ${escapeHtmlTg(c.clientRequest || '—')}\n📌 Завдання: ${taskLabel} — ${task.date}${task.time ? ' ' + task.time : ''}`);
+    const acc = accusativeFirst(c.name);
+    const head = acc ? `Додав ${escapeHtmlTg(acc)} у срм` : `Додав у срм <b>${escapeHtmlTg(c.name)}</b>`;
+    const when = taskWhenWord(task.date, kyivTodayISO()) + (task.time ? ` о ${task.time}` : '');
+    const req = String(c.clientRequest || '').trim();
+    const parts = [c.source, req && req.charAt(0).toLowerCase() + req.slice(1), budgetLabel(c)].filter(Boolean).map(escapeHtmlTg);
+    parts.push(`${taskWord(task.type).toLowerCase()} ${when}`);
+    await sendTelegramKeyboard(s.token, s.chatId, `${head}: ${parts.join(', ')}.`, [[
+      { text: 'Картка клієнта', callback_data: `p:c:${c.id}` },
+      { text: 'Задачі на день', callback_data: 'p:tl' },
+    ]]);
   } catch (err) {
     console.error('finalizePendingIntake failed:', err);
-    await sendTelegramMessage(s.token, s.chatId, '❌ Помилка збереження клієнта: ' + (err.message || 'невідома помилка'));
+    await sendTelegramMessage(s.token, s.chatId, 'Не вдалося зберегти клієнта в срм. Напиши ще раз час дзвінка, спробую знову.');
+    return;
   }
 
   await advancePendingIntakeQueue(userId);
@@ -456,10 +571,12 @@ async function finalizePendingIntake(userId, row, text) {
 // one are untouched (prompted_at IS NULL for those), so a manager only ever
 // gets nagged about the one question actually blocking them right now.
 async function checkAndRemindPendingIntakes(pool) {
+  // Пропозиція «Додати клієнта?», на яку не відповіли за добу, більше не актуальна.
+  await pool.query("DELETE FROM pending_intakes WHERE step = 'offer' AND created_at < now() - interval '1 day'");
   const { rows } = await pool.query(`
     SELECT pi.*, u.tg_settings AS tg_settings FROM pending_intakes pi
     JOIN users u ON u.id = pi.user_id AND u.active = true
-    WHERE pi.prompted_at IS NOT NULL
+    WHERE pi.prompted_at IS NOT NULL AND pi.step <> 'offer'
       AND COALESCE(pi.last_reminded_at, pi.prompted_at) <= now() - interval '1 hour'
   `);
   let sent = 0, skipped = 0;
@@ -690,24 +807,21 @@ function looksLikeNewClientRequest(text) {
 // an explicit "add a new client" phrase (see looksLikeNewClientRequest) —
 // creates a fresh client card, same shape as the AI-screenshot intake path,
 // landing in stage 1 ("Зателефонувати") like any other organic new lead.
-async function processNewClientFromText(userId, phoneNorm, text) {
-  const { rows } = await pool.query(
-    'SELECT id, display_name, tg_settings FROM users WHERE id = $1 AND active = true',
-    [userId]
-  );
-  const user = rows[0];
-  if (!user) return;
-  const s = user.tg_settings || {};
-  const reqUser = { id: user.id, displayName: user.display_name };
-
-  let info;
-  try {
-    info = await extractNewClientFromText(text);
-  } catch (err) {
-    await sendTelegramMessage(s.token, s.chatId, '❌ Помилка обробки повідомлення: ' + (err.message || 'невідома помилка'));
-    return;
-  }
-
+// Картка нового клієнта з тексту менеджера: імʼя, що шукає, бюджет, дзвінок, якщо
+// названий. Два розбори ШІ паралельно, щоб бот не перепитував уже написане.
+async function newClientFromText(phoneNorm, text, displayName) {
+  const [info, need] = await Promise.all([
+    extractNewClientFromText(text),
+    extractBudgetAndNeed(text).catch(() => ({ clientRequest: '', budgetMin: 0, budgetMax: 0 })),
+  ]);
+  // Без ключа ШІ розбір повертає весь текст як потребу: це не потреба, а повідомлення.
+  const raw = String(text).trim().slice(0, 200);
+  let request = String(need.clientRequest || '').trim();
+  // Розбір каже «не надано» словами, а не порожнім рядком: це не потреба.
+  if (request === raw || request.includes(phoneNorm.slice(-7)) ||
+      /не\s+(надан|вказан|згадан|зазнач|уточн)|відсутн|немає\s+(інформац|даних)|невідом/iu.test(request)) request = '';
+  // Бюджет окремим полем, тому з опису потреби він прибирається, інакше в підсумку двічі.
+  request = withoutBudget(request, need);
   const c = {
     id: uid(),
     name: info.name || 'Без імені',
@@ -716,39 +830,154 @@ async function processNewClientFromText(userId, phoneNorm, text) {
     source: '',
     stage: 1, // "Зателефонувати" — organic new lead, same as the AI-screenshot path
     hot: false,
-    propType: '', rooms: '', budgetMin: '', budgetMax: '', district: '', area: '', floor: '',
+    propType: '', rooms: '', budgetMin: need.budgetMin || '', budgetMax: need.budgetMax || '', district: '', area: '', floor: '',
     timeline: '', payment: '', purpose: '',
-    clientRequest: '',
+    clientRequest: request,
     notes: info.notes || '',
     date: todayUA(),
     dateISO: isoToday(),
     createdAt: new Date().toISOString(),
-    responsibleManagerName: reqUser.displayName,
+    responsibleManagerName: displayName,
     tasks: [],
     history: [{ id: uid(), type: 'created', text: 'Клієнта додано текстовим повідомленням у Telegram', result: '', date: todayUA(), time: nowTimeUA() }],
+    origin: 'text',
   };
-
-  let scheduledLine = '';
   if (info.hasAppointment) {
     c.tasks.push({ id: uid(), type: info.appointmentType, date: info.appointmentDate, time: info.appointmentTime, done: false });
-    scheduledLine = `\n📅 Заплановано: ${TASK_LABELS[info.appointmentType] || info.appointmentType} — ${info.appointmentDate} ${info.appointmentTime}`;
   }
+  return c;
+}
 
-  // Same mandatory gate as the AI-screenshot path (see advancePendingIntakeQueue)
-  // — held in pending_intakes until source + budget/need are answered, instead
-  // of going straight into `clients`.
+async function userAndSettings(userId) {
+  const { rows } = await pool.query(
+    'SELECT id, display_name, tg_settings FROM users WHERE id = $1 AND active = true', [userId]);
+  return rows[0] || null;
+}
+
+// «Додай клієнта …»: менеджер сказав прямо, тому одразу питання про джерело.
+async function processNewClientFromText(userId, phoneNorm, text) {
+  const user = await userAndSettings(userId);
+  if (!user) return;
+  const s = user.tg_settings || {};
   try {
+    const c = await newClientFromText(phoneNorm, text, user.display_name);
     await pool.query(
       "INSERT INTO pending_intakes (id, user_id, client_data, step) VALUES ($1, $2, $3, 'source')",
       [c.id, userId, c]
     );
-    await sendTelegramMessage(s.token, s.chatId,
-      `🆕 Розпізнано нового клієнта: <b>${escapeHtmlTg(c.name)}</b> (${escapeHtmlTg(c.phone)})${scheduledLine}\n📋 Зараз запитаю джерело/бюджет/потребу/завдання — без цього картка не потрапить в CRM.`);
     await advancePendingIntakeQueue(userId);
+    await sayIfQueued(s, userId, c);
   } catch (err) {
     console.error('processNewClientFromText failed:', err);
-    await sendTelegramMessage(s.token, s.chatId, '❌ Помилка обробки повідомлення: ' + (err.message || 'невідома помилка'));
+    await sendTelegramMessage(s.token, s.chatId, 'Не вдалося розібрати повідомлення. Напиши ще раз імʼя, номер і що шукає клієнт.');
   }
+}
+
+// Номер, якого в менеджера ще немає, без «додай клієнта»: бот пропонує додати,
+// а не відмовляє. Картка чекає в pending_intakes кроком 'offer' до відповіді.
+async function offerNewClient(userId, phoneNorm, text) {
+  const user = await userAndSettings(userId);
+  if (!user) return;
+  const s = user.tg_settings || {};
+  let c;
+  try {
+    c = await newClientFromText(phoneNorm, text, user.display_name);
+  } catch (err) {
+    console.error('offerNewClient failed:', err);
+    await sendTelegramMessage(s.token, s.chatId,
+      `Номера ${phoneLabel(phoneNorm)} у тебе ще немає. Щоб додати клієнта, напиши ще раз імʼя, номер і що шукає.`);
+    return;
+  }
+  await pool.query(
+    "DELETE FROM pending_intakes WHERE user_id = $1 AND step = 'offer' AND client_data->>'phone' = $2",
+    [userId, c.phone]);
+  await pool.query(
+    "INSERT INTO pending_intakes (id, user_id, client_data, step) VALUES ($1, $2, $3, 'offer')",
+    [c.id, userId, c]);
+  const lines = [`Номера ${phoneLabel(c.phone)} у тебе ще немає. Додати нового клієнта?`, '',
+    `<b>${escapeHtmlTg(c.name)}</b>, ${phoneLabel(c.phone)}`];
+  const need = needLine(c);
+  if (need) lines.push(escapeHtmlTg(need));
+  await sendTelegramKeyboard(s.token, s.chatId, lines.join('\n'), [
+    [{ text: 'Додати клієнта', callback_data: `ni:add:${c.id}` }],
+    [{ text: 'Ні, це не новий клієнт', callback_data: `ni:no:${c.id}` }],
+  ]);
+}
+
+// «Оновив картку Андрія: дзвінок завтра о 12:00.» (екран 16.11.2026)
+function updatedLine(c, phone, scheduled, stage) {
+  const gen = genitiveFirst(c.name);
+  const whose = gen ? escapeHtmlTg(gen) : `<b>${escapeHtmlTg(c.name || phoneLabel(phone))}</b>`;
+  return `Оновив картку ${whose}: ${[scheduled, stage].filter(Boolean).join(', ') || 'дописав нотатку'}.`;
+}
+
+// Коли бот ще питає про іншого нового клієнта, питання про цього прийде пізніше.
+async function sayIfQueued(s, userId, c) {
+  const { rows } = await pool.query('SELECT prompted_at FROM pending_intakes WHERE id = $1', [c.id]);
+  if (!rows[0] || rows[0].prompted_at) return;
+  const { rows: act } = await pool.query(
+    "SELECT client_data FROM pending_intakes WHERE user_id = $1 AND step <> 'offer' AND prompted_at IS NOT NULL ORDER BY created_at LIMIT 1", [userId]);
+  const other = act[0] ? act[0].client_data.name : '';
+  await sendTelegramMessage(s.token, s.chatId,
+    `Спершу допишемо ${other ? '<b>' + escapeHtmlTg(other) + '</b>' : 'попереднього клієнта'}, тоді спитаю про <b>${escapeHtmlTg(c.name)}</b>.`);
+}
+
+const QUICK_CALL = { h1: () => { const n = pult.kyivNow(); const [h, m] = n.time.split(':').map(Number); const t = h * 60 + m + 60;
+  return { date: t >= 1440 ? addDaysISO(n.date, 1) : n.date, time: `${String(Math.floor((t % 1440) / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}` }; },
+  t1: () => ({ date: addDaysISO(kyivTodayISO(), 1), time: '10:00' }),
+  t2: () => ({ date: addDaysISO(kyivTodayISO(), 2), time: '10:00' }) };
+
+// Кнопки нового клієнта: ni:add, ni:no, ni:skip, ni:t:<id>:<h1|t1|t2|x>.
+async function handleNewClientCallback(userId, s, data, cqId) {
+  const [, action, id, opt] = data.split(':');
+  const { rows } = await pool.query('SELECT * FROM pending_intakes WHERE id = $1 AND user_id = $2', [id, userId]);
+  const row = rows[0];
+  const want = { add: 'offer', no: 'offer', skip: 'details', t: 'task' }[action];
+  if (!row || row.step !== want) { await answerCallbackQuery(s.token, cqId, 'Вже оброблено', true); return; }
+  await answerCallbackQuery(s.token, cqId);
+
+  if (action === 'no') {
+    await pool.query('DELETE FROM pending_intakes WHERE id = $1', [id]);
+    await sendTelegramMessage(s.token, s.chatId, 'Добре, нічого не додаю.');
+    return;
+  }
+  if (action === 'add') {
+    await pool.query("UPDATE pending_intakes SET step = 'source', prompted_at = NULL, created_at = now() WHERE id = $1", [id]);
+    await advancePendingIntakeQueue(userId);
+    await sayIfQueued(s, userId, row.client_data);
+    return;
+  }
+  if (action === 'skip') {
+    await pool.query("UPDATE pending_intakes SET step = 'task', prompted_at = NULL WHERE id = $1", [id]);
+    await advancePendingIntakeQueue(userId);
+    return;
+  }
+  if (opt === 'x') {
+    await sendTelegramMessage(s.token, s.chatId, 'Напиши дату й час, наприклад «завтра 14:00».');
+    return;
+  }
+  const when = QUICK_CALL[opt] && QUICK_CALL[opt]();
+  if (when) await finalizePendingIntake(userId, row, '', { type: 'call', date: when.date, time: when.time });
+}
+
+// Повідомлення з номером, не тим, про чий бот зараз питає: це не відповідь, а
+// окрема справа. Бот робить її своїм шляхом і повертається до питання.
+function isAboutOtherClient(row, text) {
+  const found = extractPhoneFromText(text).valid;
+  if (!found) return false;
+  const own = normalizePhone(row.client_data.phone || '');
+  return !own || own !== found;
+}
+
+async function askAgain(userId, rowId) {
+  const { rows } = await pool.query('SELECT * FROM pending_intakes WHERE id = $1', [rowId]);
+  const row = rows[0];
+  if (!row) return;
+  const user = await userAndSettings(userId);
+  if (!user) return;
+  const s = user.tg_settings || {};
+  if (row.step === 'details') await sendDetailsPrompt(s, row, false, 'back');
+  else if (row.step === 'task') await sendTaskPrompt(s, row, false, 'back');
 }
 
 // A plain text message that names a client instead of giving their phone
@@ -812,7 +1041,7 @@ async function processClientTaskByName(userId, text) {
         if (!c.tasks) c.tasks = [];
         c.tasks = removeOlderPendingTasksServer(c.tasks, info.appointmentType, info.appointmentDate);
         c.tasks.push({ id: uid(), type: info.appointmentType, date: info.appointmentDate, time: info.appointmentTime, done: false });
-        scheduledLine = `\n📅 Заплановано: ${TASK_LABELS[info.appointmentType] || info.appointmentType} — ${info.appointmentDate} ${info.appointmentTime}`;
+        scheduledLine = `${taskWord(info.appointmentType).toLowerCase()} ${taskWhenWord(info.appointmentDate, kyivTodayISO())}${info.appointmentTime ? ' о ' + info.appointmentTime : ''}`;
       }
 
       let stageLine = '';
@@ -820,13 +1049,13 @@ async function processClientTaskByName(userId, text) {
         const fromName = STAGES.find(st => st.id === c.stage)?.name || '?';
         c.stage = info.newStageId;
         c.history.unshift({ id: uid(), type: 'stage_change', text: `Етап: ${fromName} → ${info.newStageName}`, result: '', date: todayUA(), time: nowTimeUA() });
-        stageLine = `\n↪️ Етап: ${stageLabel(STAGES[info.newStageId]) || info.newStageName}`;
+        stageLine = `етап «${stageLabel(STAGES[info.newStageId]) || info.newStageName}»`;
       }
 
       await upsertClientAndNotify(client, reqUser, c);
       await client.query('COMMIT');
 
-      await sendTelegramMessage(s.token, s.chatId, `✅ Оновлено картку: <b>${escapeHtmlTg(c.name)}</b>${stageLine}${scheduledLine}`);
+      await sendTelegramMessage(s.token, s.chatId, updatedLine(c, c.phone, scheduledLine, stageLine));
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -877,8 +1106,7 @@ async function processTextUpdate(userId, text) {
       await processNewClientFromText(userId, phoneNorm, text);
       return;
     }
-    await sendTelegramMessage(s.token, s.chatId,
-      `❌ Клієнта з номером ${phoneNorm} не знайдено у вашій базі.\n\nЩоб додати його як нового — напишіть "додай клієнта" разом із номером (наприклад: "додай клієнта ${phoneNorm.replace(/^380/, '0')} Марк, шукає 1-кімнатну").`);
+    await offerNewClient(userId, phoneNorm, text);
     return;
   }
 
@@ -899,7 +1127,7 @@ async function processTextUpdate(userId, text) {
         if (!c.tasks) c.tasks = [];
         c.tasks = removeOlderPendingTasksServer(c.tasks, info.appointmentType, info.appointmentDate);
         c.tasks.push({ id: uid(), type: info.appointmentType, date: info.appointmentDate, time: info.appointmentTime, done: false });
-        scheduledLine = `\n📅 Заплановано: ${TASK_LABELS[info.appointmentType] || info.appointmentType} — ${info.appointmentDate} ${info.appointmentTime}`;
+        scheduledLine = `${taskWord(info.appointmentType).toLowerCase()} ${taskWhenWord(info.appointmentDate, kyivTodayISO())}${info.appointmentTime ? ' о ' + info.appointmentTime : ''}`;
       }
 
       let stageLine = '';
@@ -907,13 +1135,13 @@ async function processTextUpdate(userId, text) {
         const fromName = STAGES.find(st => st.id === c.stage)?.name || '?';
         c.stage = info.newStageId;
         c.history.unshift({ id: uid(), type: 'stage_change', text: `Етап: ${fromName} → ${info.newStageName}`, result: '', date: todayUA(), time: nowTimeUA() });
-        stageLine = `\n↪️ Етап: ${stageLabel(STAGES[info.newStageId]) || info.newStageName}`;
+        stageLine = `етап «${stageLabel(STAGES[info.newStageId]) || info.newStageName}»`;
       }
 
       await upsertClientAndNotify(client, reqUser, c);
       await client.query('COMMIT');
 
-      await sendTelegramMessage(s.token, s.chatId, `✅ Оновлено картку: <b>${escapeHtmlTg(c.name)}</b> (${escapeHtmlTg(c.phone || phoneNorm)})${stageLine}${scheduledLine}`);
+      await sendTelegramMessage(s.token, s.chatId, updatedLine(c, c.phone || phoneNorm, scheduledLine, stageLine));
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -1032,6 +1260,11 @@ router.post('/:userId', async (req, res) => {
           .catch(err => console.error('objectDialog.handleCallback error:', err));
         return;
       }
+      if ((cq.data || '').startsWith('ni:')) {
+        handleNewClientCallback(userId, s, cq.data, cq.id)
+          .catch(err => console.error('handleNewClientCallback error:', err));
+        return;
+      }
       const data = cq.data || '';
       const mNew = /^src:(.+):(\d+)$/.exec(data);
       const mFix = /^fixsrc:(.+):(\d+)$/.exec(data);
@@ -1090,10 +1323,14 @@ router.post('/:userId', async (req, res) => {
       }
 
       const pendingStep = await getActiveTextStepIntake(userId);
-      if (pendingStep?.step === 'details') {
+      if (pendingStep && isAboutOtherClient(pendingStep, msg.text)) {
+        processTextUpdate(userId, msg.text)
+          .then(() => askAgain(userId, pendingStep.id))
+          .catch(err => console.error('processTextUpdate (mid-intake) error:', err));
+      } else if (pendingStep?.step === 'details') {
         handleDetailsAnswer(userId, pendingStep, msg.text).catch(err => console.error('handleDetailsAnswer error:', err));
       } else if (pendingStep?.step === 'task') {
-        finalizePendingIntake(userId, pendingStep, msg.text).catch(err => console.error('finalizePendingIntake error:', err));
+        handleFirstCallAnswer(userId, s, pendingStep, msg.text).catch(err => console.error('handleFirstCallAnswer error:', err));
       } else {
         processTextUpdate(userId, msg.text).catch(err => console.error('processTextUpdate error:', err));
       }
