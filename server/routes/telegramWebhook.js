@@ -6,7 +6,7 @@ const { upsertClientAndNotify } = require('../clientOps');
 const { sendTelegramMessage, sendTelegramKeyboard, answerCallbackQuery, getFilePath, downloadFileAsBase64, TASK_LABELS, addDaysISO, kyivTodayISO, taskWord, taskWhenWord } = require('../telegram');
 const { extractBuyers, extractTextUpdate, extractPersonalTodo, extractClientTaskByName, extractNewClientFromText, extractBudgetAndNeed, extractTaskFromText } = require('../aiIntake');
 const { STAGES, DEAL_STAGE_ID } = require('../stages');
-const { stageLabel, genitiveName } = require('../cardFormat');
+const { stageLabel, genitiveName, firstNameOf, isFemaleName, accusativeFirst } = require('../cardFormat');
 const objectDialog = require('./objectDialog');
 const objectIntake = require('../objectIntake');
 const leads = require('../leads');
@@ -206,24 +206,6 @@ function escapeHtmlTg(s) {
 
 // ── новий клієнт: імена, підписи, питання (екран 16.11.2026, klient-tekstom-bot.html) ──
 
-function firstNameOf(name) {
-  const w = String(name == null ? '' : name).trim().split(/\s+/)[0] || '';
-  return /^[А-ЩЬЮЯҐЄІЇа-щьюяґєіїʼ'’-]{2,}$/u.test(w) && !/^(клієнт|без)/iu.test(w) ? w : '';
-}
-// Чоловічі імена на -а, -я, які інакше пішли б за жіночі.
-const MALE_A = new Set(['микола', 'ілля', 'кузьма', 'сава', 'лука', 'фома', 'нікіта', 'никита', 'хома', 'юда']);
-function isFemaleName(name) {
-  const w = firstNameOf(name).toLowerCase();
-  return /[ая]$/u.test(w) && !MALE_A.has(w);
-}
-// «Ірину», «Олега»: знахідний відмінок імені. Порожньо, коли певно не відмінюється.
-function accusativeFirst(name) {
-  const w = firstNameOf(name);
-  if (!w) return '';
-  if (isFemaleName(name)) return w.replace(/а$/u, 'у').replace(/я$/u, 'ю');
-  const g = genitiveName(w);
-  return g === 'клієнта' ? '' : g;
-}
 function genitiveFirst(name) {
   const w = firstNameOf(name);
   const g = w ? genitiveName(w) : 'клієнта';

@@ -8,7 +8,7 @@
 
 const { pool } = require('./db');
 const { STAGES, DEAL_STAGE_ID, commissionOf } = require('./stages');
-const { addHistory, appendNote, stageLabel, dateUA, timeUA, objectStatusLabel, roomsLabel, areaLabel, genitiveName } = require('./cardFormat');
+const { addHistory, appendNote, stageLabel, dateUA, timeUA, objectStatusLabel, roomsLabel, areaLabel, genitiveName, firstNameOf, isFemaleName, accusativeFirst } = require('./cardFormat');
 const siteSync = require('./siteSync');
 const { sendTelegramMessage, sendTelegramKeyboard, sendTelegramPhoto, answerCallbackQuery, taskWord, crmLink, taskWhenWord } = require('./telegram');
 const crypto = require('crypto');
@@ -250,6 +250,9 @@ function clientCardText(row, today) {
 function clientCardRows(row, today = kyivNow().date) {
   const c = row.data || {};
   const rows = [];
+  if (row.archived_at) {
+    return [[{ text: 'Повернути у воронку', callback_data: `p:rs:${row.id}` }], [{ text: 'Назад до списку', callback_data: 'p:c' }]];
+  }
   // Ті самі «Виконано» і «Перенести», що в «Задачах на день», під найближчою задачею.
   const task = nextTask(c, today);
   if (task && task.id) {
@@ -263,6 +266,11 @@ function clientCardRows(row, today = kyivNow().date) {
     rows.push([{ text: 'Далі по воронці: ' + stageLabel(next),
       callback_data: `p:stage:${row.id}` }]);
   }
+  // Будь-який етап і відмова, як у срм (екран 16.11.2026, etap-bot.html).
+  rows.push([
+    { text: 'Інший етап', callback_data: `p:sl:${row.id}` },
+    { text: 'Відмова', callback_data: `p:ar:${row.id}` },
+  ]);
   rows.push([
     { text: 'Поставити дзвінок', callback_data: `p:call:${row.id}` },
     { text: 'Дописати нотатку', callback_data: `p:note:${row.id}` },
@@ -489,6 +497,7 @@ async function handlePultCallback(userId, s, data, cqId) {
     return true;
   }
 
+  if (STAGE_ACTIONS.has(action)) return handleStageAction(userId, s, action, parts, ack);
   if (action === 'stage' || action === 'call' || action === 'note' || action === 'match') {
     const row = await clientCard(id, userId);
     if (!row) {
@@ -497,24 +506,12 @@ async function handlePultCallback(userId, s, data, cqId) {
       return true;
     }
     const c = row.data || {};
+    if (row.archived_at) { await ack(); await archivedReply(s, row); return true; }
 
     if (action === 'stage') {
       const next = STAGES[c.stage + 1];
       if (!next) { await ack('Далі нікуди'); return true; }
-      // Як changeStageImmediate() у СРМ: запис в історії картки, а на «Угоді»
-      // відкриті завдання знімаються (onEnteredDealStage).
-      let updated = addHistory({ ...c, stage: c.stage + 1 }, 'stage_change',
-        `Етап: ${STAGES[c.stage]?.name} → ${next.name} (з бота)`);
-      if (next.id === DEAL_STAGE_ID && (updated.tasks || []).some(t => !t.done)) {
-        updated = addHistory({ ...updated, tasks: updated.tasks.filter(t => t.done) }, 'stage_change',
-          'Відкриті завдання знято, угоду закрито');
-      }
-      await pool.query('UPDATE clients SET data = $1, updated_at = now() WHERE id = $2 AND manager_id = $3',
-        [updated, id, userId]);
-      await pool.query(
-        `INSERT INTO events (manager_id, type, client_id, meta)
-         VALUES ($1, 'stage_change', $2, jsonb_build_object('fromStage', $3::int, 'toStage', $4::int))`,
-        [userId, id, c.stage, c.stage + 1]); // ключі ті самі, що в clientOps: їх читають зріз і статистика
+      const updated = await setStage(userId, row, c.stage + 1, 'з бота');
       await ack(stageLabel(next));
       const line = next.id === DEAL_STAGE_ID && commissionOf(updated) > 0
         ? `\nКомісія: ${money(Math.round(commissionOf(updated)), 'USD')}` : '';
@@ -552,6 +549,132 @@ async function handlePultCallback(userId, s, data, cqId) {
   }
 
   await ack();
+  return true;
+}
+
+// ── етап і відмова (екран 16.11.2026, etap-bot.html) ──────────────────────
+
+const STAGE_ACTIONS = new Set(['sl', 'sg', 'ar', 'rs']);
+// Ті самі причини, що у вікні архіву в срм (crm.html, arch-reason), без значків.
+const ARCHIVE_REASONS = ['Вже придбав в іншому місці', 'Плани змінилися', 'Не відповідає на дзвінки',
+  'Бюджет не підходить', 'Відклав покупку', 'Перейшов до конкурентів', 'Інша причина'];
+const backToCardBtn = id => ({ text: 'Назад до картки', callback_data: `p:c:${id}` });
+
+function who(c) { return firstNameOf(c.name) || c.name || 'Клієнт'; }
+
+async function archivedReply(s, row) {
+  const c = row.data || {};
+  await sendTelegramKeyboard(s.token, s.chatId,
+    `${esc(who(c))} в архіві${row.archive_reason ? ': «' + esc(row.archive_reason) + '»' : ''}.`,
+    [[{ text: 'Повернути у воронку', callback_data: `p:rs:${row.id}` }, { text: 'Мої клієнти', callback_data: 'p:c' }]]);
+}
+
+// Як changeStageImmediate() у срм: запис в історії, подія для статистики, а на «Угоді»
+// відкриті завдання знімаються (onEnteredDealStage). Один шлях для «Далі» і «Інший етап».
+async function setStage(userId, row, to, via) {
+  const c = row.data || {};
+  const target = STAGES[to];
+  let updated = addHistory({ ...c, stage: to }, 'stage_change',
+    `Етап: ${STAGES[c.stage]?.name} → ${target.name} (${via})`);
+  if (target.id === DEAL_STAGE_ID && (updated.tasks || []).some(t => !t.done)) {
+    updated = addHistory({ ...updated, tasks: updated.tasks.filter(t => t.done) }, 'stage_change',
+      'Відкриті завдання знято, угоду закрито');
+  }
+  await pool.query('UPDATE clients SET data = $1, updated_at = now() WHERE id = $2 AND manager_id = $3',
+    [updated, row.id, userId]);
+  await pool.query(
+    `INSERT INTO events (manager_id, type, client_id, meta)
+     VALUES ($1, 'stage_change', $2, jsonb_build_object('fromStage', $3::int, 'toStage', $4::int))`,
+    [userId, row.id, c.stage, to]); // ключі ті самі, що в clientOps: їх читають зріз і статистика
+  return updated;
+}
+
+function stageRows(row) {
+  const cur = (row.data || {}).stage;
+  const btns = STAGES.filter(st => st.id !== cur)
+    .map(st => ({ text: stageLabel(st), callback_data: `p:sg:${row.id}:${st.id}` }));
+  const rows = [];
+  for (let i = 0; i < btns.length; i += 2) rows.push(btns.slice(i, i + 2));
+  rows.push([backToCardBtn(row.id)]);
+  return rows;
+}
+
+function reasonRows(id) {
+  const b = i => ({ text: ARCHIVE_REASONS[i], callback_data: `p:ar:${id}:${i}` });
+  return [[b(0)], [b(1), b(4)], [b(2), b(3)], [b(5), b(6)], [backToCardBtn(id)]];
+}
+
+async function handleStageAction(userId, s, action, parts, ack) {
+  const id = parts[2];
+  const row = await clientCard(id, userId);
+  if (!row) {
+    await ack('Не твій клієнт');
+    await sendTelegramMessage(s.token, s.chatId, 'Цей клієнт не на твоїй картці, рухати його може той, у кого він.');
+    return true;
+  }
+  await ack();
+  const c = row.data || {};
+
+  if (action === 'rs') {
+    if (row.archived_at) {
+      await pool.query('UPDATE clients SET archived_at = NULL, archive_reason = NULL WHERE id = $1 AND manager_id = $2', [id, userId]);
+    }
+    const st = STAGES[c.stage];
+    await sendTelegramKeyboard(s.token, s.chatId,
+      `${esc(who(c))} знову у воронці${st ? ' на етапі «' + esc(stageLabel(st)) + '»' : ''}.`,
+      [[{ text: 'Картка клієнта', callback_data: `p:c:${id}` }, { text: 'Мої клієнти', callback_data: 'p:c' }]]);
+    return true;
+  }
+  if (row.archived_at) { await archivedReply(s, row); return true; }
+
+  if (action === 'sl') {
+    const st = STAGES[c.stage];
+    await sendTelegramKeyboard(s.token, s.chatId,
+      `${esc(who(c))} зараз на етапі «${esc(st ? stageLabel(st) : '?')}». Куди перенести?`, stageRows(row));
+    return true;
+  }
+
+  if (action === 'sg') {
+    const to = Number(parts[3]);
+    if (!STAGES[to]) return true;
+    if (to === c.stage) {
+      await sendTelegramKeyboard(s.token, s.chatId,
+        `${esc(who(c))} уже на етапі «${esc(stageLabel(STAGES[to]))}».`, [[backToCardBtn(id)]]);
+      return true;
+    }
+    const from = c.stage;
+    const updated = await setStage(userId, row, to, 'з бота');
+    const comm = to === DEAL_STAGE_ID && commissionOf(updated) > 0
+      ? `\nКомісія: ${money(Math.round(commissionOf(updated)), 'USD')}` : '';
+    const btns = [backToCardBtn(id)];
+    if (STAGES[from]) btns.unshift({ text: `Повернути «${stageLabel(STAGES[from])}»`, callback_data: `p:sg:${id}:${from}` });
+    await sendTelegramKeyboard(s.token, s.chatId,
+      `${esc(who(c))} тепер на етапі «${esc(stageLabel(STAGES[to]))}». У срм теж.${comm}`, [btns]);
+    return true;
+  }
+
+  if (action === 'ar') {
+    if (parts[3] === undefined) {
+      const verb = isFemaleName(c.name) ? 'відмовилась' : 'відмовився';
+      const she = isFemaleName(c.name) ? 'Вона піде' : firstNameOf(c.name) ? 'Він піде' : 'Клієнт піде';
+      await sendTelegramKeyboard(s.token, s.chatId,
+        `Чому ${esc(who(c))} ${verb}? ${she} в архів срм, звідти можна повернути.`, reasonRows(id));
+      return true;
+    }
+    const reason = ARCHIVE_REASONS[Number(parts[3])];
+    if (!reason) return true;
+    // Той самий запис, що кнопка архіву в срм (POST /api/clients/:id/archive).
+    await pool.query('UPDATE clients SET archived_at = now(), archive_reason = $1 WHERE id = $2 AND manager_id = $3',
+      [reason, id, userId]);
+    await clearWaiting(userId);
+    const open = (c.tasks || []).some(t => !t.done && t.date);
+    const acc = accusativeFirst(c.name);
+    const head = acc ? `Переніс ${esc(acc)} в архів` : `Переніс в архів <b>${esc(c.name || 'клієнта')}</b>`;
+    await sendTelegramKeyboard(s.token, s.chatId,
+      `${head}: «${esc(reason)}».${open ? ` ${isFemaleName(c.name) ? 'Її' : 'Його'} задачі зникли із «Задач на день».` : ''}`,
+      [[{ text: 'Повернути у воронку', callback_data: `p:rs:${id}` }, { text: 'Мої клієнти', callback_data: 'p:c' }]]);
+    return true;
+  }
   return true;
 }
 

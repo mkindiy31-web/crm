@@ -76,4 +76,25 @@ function genitiveName(name) {
   return 'клієнта';
 }
 
-module.exports = { isoKyiv, dateUA, timeUA, uid, addHistory, notesText, appendNote, stageLabel, OBJECT_STATUS, objectStatusLabel, roomsLabel, areaLabel, genitiveName };
+// Перше слово імені, якщо воно кириличне імʼя, а не «Клієнт» чи «Без імені».
+function firstNameOf(name) {
+  const w = String(name == null ? '' : name).trim().split(/\s+/)[0] || '';
+  return /^[А-ЩЬЮЯҐЄІЇа-щьюяґєії\u02bc'’-]{2,}$/u.test(w) && !/^(клієнт|без)/iu.test(w) ? w : '';
+}
+// Чоловічі імена на -а, -я, які інакше пішли б за жіночі.
+const MALE_A = new Set(['микола', 'ілля', 'кузьма', 'сава', 'лука', 'фома', 'нікіта', 'никита', 'хома', 'юда']);
+function isFemaleName(name) {
+  const w = firstNameOf(name).toLowerCase();
+  return /[ая]$/u.test(w) && !MALE_A.has(w);
+}
+// «Ірину», «Олега»: знахідний відмінок імені. Порожньо, коли певно не відмінюється.
+function accusativeFirst(name) {
+  const w = firstNameOf(name);
+  if (!w) return '';
+  // «Ірину», «Миколу», «Іллю»: на -а, -я знахідний однаковий для жіночих і чоловічих.
+  if (/[ая]$/u.test(w)) return w.replace(/а$/u, 'у').replace(/я$/u, 'ю');
+  const g = genitiveName(w);
+  return g === 'клієнта' ? '' : g;
+}
+
+module.exports = { isoKyiv, dateUA, timeUA, uid, addHistory, notesText, appendNote, stageLabel, OBJECT_STATUS, objectStatusLabel, roomsLabel, areaLabel, genitiveName, firstNameOf, isFemaleName, accusativeFirst };
