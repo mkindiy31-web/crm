@@ -10,7 +10,7 @@ const { pool } = require('./db');
 const { STAGES, DEAL_STAGE_ID, commissionOf } = require('./stages');
 const { addHistory, appendNote, stageLabel, dateUA, timeUA, objectStatusLabel, roomsLabel, areaLabel, genitiveName } = require('./cardFormat');
 const siteSync = require('./siteSync');
-const { sendTelegramMessage, sendTelegramKeyboard, sendTelegramPhoto, answerCallbackQuery, taskWord, crmLink } = require('./telegram');
+const { sendTelegramMessage, sendTelegramKeyboard, sendTelegramPhoto, answerCallbackQuery, taskWord, crmLink, taskWhenWord } = require('./telegram');
 const crypto = require('crypto');
 
 const SHOWN = 3;            // три позиції в списку, решта за «Показати всі N»
@@ -186,7 +186,7 @@ function nextTask(c, today) {
   // менеджер бачити не мав би.
   const dm = String(t.date).split('-').reverse().slice(0, 2).join('.');
   const when = (t.date === today ? 'сьогодні' : t.date < today ? 'прострочено' : dm) + (t.time ? ' о ' + t.time : '');
-  return { type: taskWord(t.type), when, overdue: t.date < today };
+  return { id: t.id, type: taskWord(t.type), when, overdue: t.date < today };
 }
 
 function clientLine(row, today) {
@@ -247,9 +247,17 @@ function clientCardText(row, today) {
   return lines.join('\n');
 }
 
-function clientCardRows(row) {
+function clientCardRows(row, today = kyivNow().date) {
   const c = row.data || {};
   const rows = [];
+  // Ті самі «Виконано» і «Перенести», що в «Задачах на день», під найближчою задачею.
+  const task = nextTask(c, today);
+  if (task && task.id) {
+    rows.push([
+      { text: 'Виконано', callback_data: `p:td:${row.id}:${task.id}` },
+      { text: 'Перенести', callback_data: `p:tr:${row.id}:${task.id}` },
+    ]);
+  }
   const next = STAGES[c.stage + 1];
   if (next) {
     rows.push([{ text: 'Далі по воронці: ' + stageLabel(next),
@@ -374,7 +382,7 @@ async function handlePultCallback(userId, s, data, cqId) {
       await sendTelegramMessage(s.token, s.chatId, 'Цей клієнт не на твоїй картці.');
       return true;
     }
-    await sendTelegramKeyboard(s.token, s.chatId, clientCardText(row, today), clientCardRows(row));
+    await sendTelegramKeyboard(s.token, s.chatId, clientCardText(row, today), clientCardRows(row, today));
     return true;
   }
 
@@ -396,6 +404,7 @@ async function handlePultCallback(userId, s, data, cqId) {
   }
 
   if (action === 'close') { await ack(); await clearWaiting(userId); return true; }
+  if (TASK_ACTIONS.has(action)) return handleTaskAction(userId, s, action, parts, ack);
 
   if (action === 'ph') {
     const row = await objectCard(id);
@@ -543,6 +552,246 @@ async function handlePultCallback(userId, s, data, cqId) {
   }
 
   await ack();
+  return true;
+}
+
+// ── задачі на день: виконано і перенести (екран 16.11.2026) ───────────────
+
+const TASK_ACTIONS = new Set(['t', 'td', 'tr', 'tm', 'tn', 'tq', 'tl']);
+// Підпис типу так, як його пише срм в історії картки (TASK_TYPES у crm.html).
+const CRM_TASK_LABEL = {
+  call: 'Призначено дзвінок', consultation: 'Запланована консультація', selection: 'Запланований підбір',
+  inspection: 'Запланований огляд', registration: 'Заплановане оформлення',
+};
+// «Закрив дзвінок», «закрив консультацію»: знахідний відмінок.
+const TASK_ACC = { call: 'дзвінок', consultation: 'консультацію', selection: 'підбір', inspection: 'огляд', registration: 'оформлення' };
+const QUICK = { h1: 'Через годину', t1: 'Завтра 10:00', t2: 'Післязавтра 10:00' };
+
+function taskAcc(type) { return TASK_ACC[type] || taskWord(type).toLowerCase(); }
+function crmTaskLabel(type) { return CRM_TASK_LABEL[type] || taskWord(type); }
+function dmy(iso) { return String(iso || '').split('-').reverse().join('.'); }
+
+// «Оксані», «Андрію»: давальний відмінок першого слова імені. Що правилом певно
+// не відмінюється, дає null, і бот пише повне імʼя після двокрапки.
+const DATIVE_EXCEPTIONS = { 'ігор': 'Ігорю', 'любов': 'Любові', 'лев': 'Леву' };
+function dativeName(name) {
+  const w = String(name == null ? '' : name).trim().split(/\s+/)[0] || '';
+  if (!/^[А-ЩЬЮЯҐЄІЇа-щьюяґєіїʼ'’-]{2,}$/u.test(w) || /^клієнт/iu.test(w)) return null;
+  const low = w.toLowerCase();
+  if (DATIVE_EXCEPTIONS[low]) return DATIVE_EXCEPTIONS[low];
+  const caps = w === w.toUpperCase();
+  const cut = (n, end) => w.slice(0, w.length - n) + (caps ? end.toUpperCase() : end);
+  if (/ія$/u.test(low)) return cut(1, 'ї');
+  if (/я$/u.test(low)) return cut(1, 'і');
+  if (/га$/u.test(low)) return cut(2, 'зі');
+  if (/ка$/u.test(low)) return cut(2, 'ці');
+  if (/ха$/u.test(low)) return cut(2, 'сі');
+  if (/а$/u.test(low)) return cut(1, 'і');
+  if (/о$/u.test(low)) return cut(1, 'у');
+  if (/[йь]$/u.test(low)) return cut(1, 'ю');
+  if (/[бвдзклмнпрстфхцжчшг]$/u.test(low)) return cut(0, 'у');
+  return null;
+}
+
+// «дзвінок Оксані», «огляд для Оксани»; без певного відмінка «дзвінок: Оксана Дмитришин».
+function taskOf(type, c) {
+  const name = c.name || c.phone || 'клієнт';
+  if (type === 'call') { const d = dativeName(c.name); return d ? `дзвінок ${d}` : `дзвінок: ${name}`; }
+  const g = genitiveName(c.name);
+  return g !== 'клієнта' ? `${taskAcc(type)} для ${g}` : `${taskAcc(type)}: ${name}`;
+}
+
+function whenPhrase(when, today) {
+  const day = taskWhenWord(when.date, today);
+  return day + (when.time ? `, ${when.time}` : '');
+}
+
+const toTasks = { text: 'Назад до задач', callback_data: 'p:tl' };
+
+function taskCardText(c, task, today) {
+  const lines = [`<b>${esc(taskWord(task.type))}</b>, ${esc(c.name || 'Клієнт')}${c.phone ? ', ' + esc(c.phone) : ''}`];
+  const when = whenPhrase(task, today);
+  if (task.date < today) lines.push(`Було на ${when}, прострочено`);
+  else lines.push(when.charAt(0).toUpperCase() + when.slice(1));
+  if (task.note) lines.push(esc(task.note));
+  const stage = STAGES[c.stage];
+  if (stage) lines.push('Етап: ' + stageLabel(stage));
+  return lines.join('\n');
+}
+
+function timeRows(prefix, back) {
+  return [
+    [{ text: QUICK.h1, callback_data: `${prefix}:h1` }, { text: QUICK.t1, callback_data: `${prefix}:t1` }],
+    [{ text: QUICK.t2, callback_data: `${prefix}:t2` }, { text: 'Інший час', callback_data: `${prefix}:x` }],
+    [back],
+  ];
+}
+
+function quickWhen(opt) {
+  if (opt === 'h1') return kyivPlusMinutes(60);
+  const today = kyivNow().date;
+  if (opt === 't1') return { date: addDays(today, 1), time: '10:00' };
+  if (opt === 't2') return { date: addDays(today, 2), time: '10:00' };
+  return null;
+}
+
+async function saveClient(id, userId, data) {
+  await pool.query('UPDATE clients SET data = $1, updated_at = now() WHERE id = $2 AND manager_id = $3',
+    [data, id, userId]);
+}
+
+// Задача з кнопки старого повідомлення могла вже змінитись у срм: бот каже
+// це словами і веде до свіжого списку, а не мовчить.
+async function findTask(userId, s, cid, tid) {
+  const row = await clientCard(cid, userId);
+  if (!row) {
+    await sendTelegramKeyboard(s.token, s.chatId, 'Цей клієнт уже не на твоїй картці.', [[toTasks]]);
+    return null;
+  }
+  const c = row.data || {};
+  const task = (c.tasks || []).find(t => String(t.id) === String(tid));
+  if (!task) {
+    await sendTelegramKeyboard(s.token, s.chatId, 'Цієї задачі вже немає: її прибрали в срм.', [[toTasks]]);
+    return null;
+  }
+  return { row, c, task };
+}
+
+async function moveTask(userId, s, row, c, task, when) {
+  const today = kyivNow().date;
+  const was = `${dmy(task.date)}${task.time ? ' ' + task.time : ''}`;
+  const tasks = (c.tasks || []).map(t => t.id === task.id ? { ...t, date: when.date, time: when.time || '' } : t);
+  const updated = addHistory({ ...c, tasks }, 'task_added',
+    `Перенесено завдання: ${crmTaskLabel(task.type)}, ${was} → ${dmy(when.date)}${when.time ? ' ' + when.time : ''} (з бота)`);
+  await saveClient(row.id, userId, updated);
+  // Нагадування за N хвилин до задачі ставить позначку з id задачі; без цього
+  // перенесена задача вже не нагадала б.
+  await pool.query('DELETE FROM notified_tasks WHERE user_id = $1 AND task_id = $2', [userId, String(task.id)]);
+  await clearWaiting(userId);
+  await sendTelegramKeyboard(s.token, s.chatId,
+    `Переніс ${esc(taskOf(task.type, c))} на ${whenPhrase(when, today)}. У срм теж.`, [[toTasks]]);
+}
+
+async function addTask(userId, s, row, c, type, when) {
+  const today = kyivNow().date;
+  const tasks = Array.isArray(c.tasks) ? c.tasks.slice() : [];
+  tasks.push({ id: Date.now().toString(36), type, date: when.date, time: when.time || '', done: false });
+  const updated = addHistory({ ...c, tasks }, 'task_added',
+    `Додано завдання: ${crmTaskLabel(type)}, ${dmy(when.date)}${when.time ? ' о ' + when.time : ''} (з бота)`);
+  await saveClient(row.id, userId, updated);
+  await clearWaiting(userId);
+  await sendTelegramKeyboard(s.token, s.chatId,
+    `Поставив ${esc(taskOf(type, c))} на ${whenPhrase(when, today)}. У срм теж.`, [[toTasks]]);
+}
+
+async function handleTaskAction(userId, s, action, parts, ack) {
+  await ack();
+  const today = kyivNow().date;
+  if (action === 'tl') {
+    await clearWaiting(userId);
+    await require('./telegram').sendDayBrief(pool, userId, s);
+    return true;
+  }
+  const cid = parts[2];
+
+  if (action === 'tn' || action === 'tq') {
+    const type = TASK_ACC[parts[3]] ? parts[3] : 'call';
+    const row = await clientCard(cid, userId);
+    if (!row) { await sendTelegramKeyboard(s.token, s.chatId, 'Цей клієнт уже не на твоїй картці.', [[toTasks]]); return true; }
+    const c = row.data || {};
+    if (action === 'tn') {
+      await sendTelegramKeyboard(s.token, s.chatId, `На коли поставити ${esc(taskOf(type, c))}?`,
+        timeRows(`p:tq:${cid}:${type}`, toTasks));
+      return true;
+    }
+    const opt = parts[4];
+    if (opt === 'x') {
+      await setWaiting(userId, 'tnew', `${cid}|${type}`);
+      await sendTelegramMessage(s.token, s.chatId, 'Напиши дату й час, наприклад «завтра 14:00».');
+      return true;
+    }
+    const when = quickWhen(opt);
+    if (when) await addTask(userId, s, row, c, type, when);
+    return true;
+  }
+
+  const found = await findTask(userId, s, cid, parts[3]);
+  if (!found) return true;
+  const { row, c, task } = found;
+  if (task.done && action !== 't') {
+    await sendTelegramKeyboard(s.token, s.chatId, 'Цю задачу вже закрили.', [[toTasks]]);
+    return true;
+  }
+
+  if (action === 't') {
+    if (task.done) {
+      await sendTelegramKeyboard(s.token, s.chatId, 'Цю задачу вже закрили.', [[toTasks]]);
+      return true;
+    }
+    await sendTelegramKeyboard(s.token, s.chatId, taskCardText(c, task, today), [
+      [{ text: 'Виконано', callback_data: `p:td:${cid}:${task.id}` }, { text: 'Перенести', callback_data: `p:tr:${cid}:${task.id}` }],
+      [{ text: 'Картка клієнта', callback_data: `p:c:${cid}` }, toTasks],
+    ]);
+    return true;
+  }
+
+  if (action === 'td') {
+    // Як closeTaskResult() у срм: done, doneAt, запис в історії; і подія для статистики, як у clientOps.
+    const tasks = (c.tasks || []).map(t => t.id === task.id ? { ...t, done: true, result: '', doneAt: dateUA() } : t);
+    const updated = addHistory({ ...c, tasks }, 'task_done',
+      `Виконано: ${crmTaskLabel(task.type)} (${dmy(task.date)}), з бота`);
+    await saveClient(row.id, userId, updated);
+    await pool.query(
+      `INSERT INTO events (manager_id, type, client_id, meta) VALUES ($1, 'task_completed', $2, $3)`,
+      [userId, row.id, JSON.stringify({ taskType: task.type })]);
+    const done = taskOf(task.type, c);
+    await sendTelegramKeyboard(s.token, s.chatId,
+      `Закрив ${esc(done)}. У картці в срм теж. Наступний крок поставити?`, [
+        [{ text: 'Дзвінок', callback_data: `p:tn:${cid}:call` }, { text: 'Огляд', callback_data: `p:tn:${cid}:inspection` }],
+        [toTasks],
+      ]);
+    return true;
+  }
+
+  if (action === 'tr') {
+    await sendTelegramKeyboard(s.token, s.chatId, `На коли перенести ${esc(taskOf(task.type, c))}?`,
+      timeRows(`p:tm:${cid}:${task.id}`, { text: 'Назад', callback_data: `p:t:${cid}:${task.id}` }));
+    return true;
+  }
+
+  if (action === 'tm') {
+    const opt = parts[4];
+    if (opt === 'x') {
+      await setWaiting(userId, 'tmove', `${cid}|${task.id}`);
+      await sendTelegramMessage(s.token, s.chatId, 'Напиши дату й час, наприклад «завтра 14:00».');
+      return true;
+    }
+    const when = quickWhen(opt);
+    if (when) await moveTask(userId, s, row, c, task, when);
+    return true;
+  }
+  return true;
+}
+
+// Текст після «Інший час»: переносить ту саму задачу або ставить нову після «Виконано».
+async function taskTimeText(userId, s, state, text) {
+  const [cid, ref] = String(state.target).split('|');
+  const when = await whenOrAsk(s, text);
+  if (!when) return true;
+  if (state.waiting === 'tnew') {
+    const row = await clientCard(cid, userId);
+    if (!row) { await clearWaiting(userId); await sendTelegramKeyboard(s.token, s.chatId, 'Цей клієнт уже не на твоїй картці.', [[toTasks]]); return true; }
+    await addTask(userId, s, row, row.data || {}, TASK_ACC[ref] ? ref : 'call', when);
+    return true;
+  }
+  const found = await findTask(userId, s, cid, ref);
+  if (!found) { await clearWaiting(userId); return true; }
+  if (found.task.done) {
+    await clearWaiting(userId);
+    await sendTelegramKeyboard(s.token, s.chatId, 'Цю задачу вже закрили.', [[toTasks]]);
+    return true;
+  }
+  await moveTask(userId, s, found.row, found.c, found.task, when);
   return true;
 }
 
@@ -830,6 +1079,8 @@ async function handlePultText(userId, s, text) {
     return true;
   }
 
+  if (state.waiting === 'tmove' || state.waiting === 'tnew') return taskTimeText(userId, s, state, text);
+
   const row = await clientCard(state.target, userId);
   if (!row) { await clearWaiting(userId); await sendTelegramMessage(s.token, s.chatId, 'Картки вже немає.'); return true; }
   const c = row.data || {};
@@ -847,8 +1098,9 @@ async function handlePultText(userId, s, text) {
   }
 
   if (state.waiting === 'call') {
+    const when = await whenOrAsk(s, text);
+    if (!when) return true; // бот уже пояснив, і стан лишився: наступний текст теж про час
     const tasks = Array.isArray(c.tasks) ? c.tasks.slice() : [];
-    const when = parseWhen(String(text));
     // Тип завдання ключем із TASK_TYPES у СРМ ('call'), а не підписом.
     tasks.push({ id: Date.now().toString(36), type: 'call', date: when.date, time: when.time, done: false });
     const [y, m, d] = when.date.split('-');
@@ -867,26 +1119,93 @@ async function handlePultText(userId, s, text) {
   return true;
 }
 
-// "завтра 14:00", "12.11 10:30", "сьогодні" — the forms a manager actually types.
+// Зараз за Києвом: дата і час, від них рахуються «через годину» і перевірка
+// минулого. Сервер стоїть в UTC, тому годинник сервера тут не годиться.
+function kyivNow() {
+  const p = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Kyiv', year: 'numeric', month: '2-digit',
+    day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
+  return { date: p.slice(0, 10), time: p.slice(11, 16) };
+}
+
+// Хвилини від зараз за Києвом: «через годину» о 23:30 дає завтра 00:30.
+function kyivPlusMinutes(minutes) {
+  const now = kyivNow();
+  const [h, m] = now.time.split(':').map(Number);
+  const total = h * 60 + m + minutes;
+  const day = Math.floor(total / 1440);
+  const rest = total - day * 1440;
+  return { date: addDays(now.date, day),
+    time: `${String(Math.floor(rest / 60)).padStart(2, '0')}:${String(rest % 60).padStart(2, '0')}` };
+}
+
+// «понеділок» містить «неділ», тому неділя лише без «по» перед нею.
+const WEEKDAYS = [/(?<!по)неділ/iu, /понеділ/iu, /вівтор/iu, /серед/iu, /четвер/iu, /п[ʼ'’]?ятниц/iu, /субот/iu];
+
+// "завтра 14:00", "12.11 10:30", "через годину", "в понеділок", "сьогодні" —
+// the forms a manager actually types. null, коли дати в тексті не видно:
+// тоді бот перепитує, а не ставить «сьогодні» мовчки.
 function parseWhen(text) {
-  const kyivToday = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Kyiv' });
+  const now = kyivNow();
+  const t = String(text);
+
+  const rel = t.match(/через\s+(?:(\d{1,2})\s*)?(годин\p{L}*|год\b|хвилин\p{L}*|хв\b|пів\s*години)/iu);
+  if (rel) {
+    const n = rel[1] ? Number(rel[1]) : 1;
+    const minutes = /пів/iu.test(rel[2]) ? 30 : /^х/iu.test(rel[2]) ? n : n * 60;
+    return kyivPlusMinutes(minutes);
+  }
 
   // Дата шукається ПЕРШОЮ і вирізається з рядка. Інакше «12.11 10:30» віддає
   // час «12:11»: той самий роздільник, і регекс часу хапає дату.
-  const dm = text.match(/(?<![\d.])(\d{1,2})[.\/](\d{1,2})(?![\d.])/);
-  const rest = dm ? text.replace(dm[0], ' ') : text;
+  const dm = t.match(/(?<![\d.])(\d{1,2})[.\/](\d{1,2})(?![\d.])/);
+  const rest = dm ? t.replace(dm[0], ' ') : t;
 
   const time = (rest.match(/(?<![\d:.])([01]?\d|2[0-3])[:.]([0-5]\d)(?![\d:.])/) || [])[0];
   const normTime = time ? time.replace('.', ':').padStart(5, '0') : '';
 
   if (dm) {
-    const year = new Date().getFullYear();
-    const iso = `${year}-${String(dm[2]).padStart(2, '0')}-${String(dm[1]).padStart(2, '0')}`;
+    const day = Number(dm[1]), month = Number(dm[2]);
+    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+    let year = Number(now.date.slice(0, 4));
+    let iso = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    // «05.01» у листопаді це січень наступного року; «12.11» у листопаді це минуле,
+    // і бот так і скаже, а не перекине на рік уперед.
+    if ((new Date(now.date) - new Date(iso)) / 86400000 > 90) iso = `${year + 1}` + iso.slice(4);
     return { date: iso, time: normTime };
   }
-  if (/післязавтра/iu.test(text)) return { date: addDays(kyivToday, 2), time: normTime };
-  if (/завтра/iu.test(text)) return { date: addDays(kyivToday, 1), time: normTime };
-  return { date: kyivToday, time: normTime };
+  if (/післязавтра/iu.test(t)) return { date: addDays(now.date, 2), time: normTime };
+  if (/завтра/iu.test(t)) return { date: addDays(now.date, 1), time: normTime };
+  const wd = WEEKDAYS.findIndex(re => re.test(t));
+  if (wd >= 0) {
+    const todayWd = new Date(now.date + 'T00:00:00Z').getUTCDay();
+    return { date: addDays(now.date, ((wd - todayWd + 7) % 7) || 7), time: normTime };
+  }
+  if (/сьогодні/iu.test(t) || normTime) return { date: now.date, time: normTime };
+  return null;
+}
+
+// Чому цей час не годиться, або '' коли годиться. Минулого бот не ставить:
+// задача, поставлена одразу простроченою, лише засмічує ранкове зведення.
+function pastReason(when) {
+  const now = kyivNow();
+  const dm = when.date.split('-').reverse().slice(0, 2).join('.');
+  if (when.date < now.date) return `${dm} уже минуло. Напиши дату, що ще попереду.`;
+  if (when.date === now.date && when.time && when.time <= now.time) {
+    return `Сьогодні ${when.time} уже минуло. Напиши час, що ще попереду.`;
+  }
+  return '';
+}
+
+// Розібраний час або null після пояснення менеджеру, що не так.
+async function whenOrAsk(s, text) {
+  const when = parseWhen(text);
+  if (!when) {
+    await sendTelegramMessage(s.token, s.chatId, 'Не побачив дати. Напиши, наприклад, «завтра 14:00», «20.11 10:30» або «через годину».');
+    return null;
+  }
+  const why = pastReason(when);
+  if (why) { await sendTelegramMessage(s.token, s.chatId, why); return null; }
+  return when;
 }
 
 function addDays(iso, days) {
@@ -898,7 +1217,7 @@ function addDays(iso, days) {
 module.exports = {
   handlePultCallback, handlePultText, handlePultPhotos, showObjects, showClients, needsPhotos, PHOTO_WAIT_MS,
   setScreenshotHandler, photoTag,
-  mayTouchObject, parseWhen,
+  mayTouchObject, parseWhen, pastReason, dativeName, kyivNow,
   SHOWN, STALE_DAYS,
   money, daysSince, esc,
   myObjects, objectLine, objectsText, objectsRows, objectButton, objectCard, objectCardText, objectCardRows,

@@ -314,9 +314,33 @@ function addDaysISO(isoDate, days) {
   return d.toISOString().slice(0, 10);
 }
 
+// Коли задача, словами менеджера: «вчора», «сьогодні», «завтра», «післязавтра»
+// або «20.11». Один підпис для кнопок, картки задачі і відповідей бота.
+function taskWhenWord(date, today) {
+  if (!date) return '';
+  if (date === today) return 'сьогодні';
+  if (date === addDaysISO(today, -1)) return 'вчора';
+  if (date === addDaysISO(today, 1)) return 'завтра';
+  if (date === addDaysISO(today, 2)) return 'післязавтра';
+  return String(date).split('-').reverse().slice(0, 2).join('.');
+}
+
+// Кнопка задачі в списку (екран 16.11.2026): «Оксана Дмитришин · дзвінок · вчора 10:30».
+// Сьогоднішня з часом без слова «сьогодні»: вона й так у сьогоднішньому списку.
+function taskButton(clientId, c, task, today) {
+  const who = c.name || c.phone || 'Клієнт';
+  const day = task.date === today && task.time ? '' : taskWhenWord(task.date, today);
+  const when = [day, task.time].filter(Boolean).join(' ');
+  return { text: `${who} · ${taskWord(task.type).toLowerCase()} · ${when}`, callback_data: `p:t:${clientId}:${task.id}` };
+}
+
+const LATE_SHOWN = 5;
+const DUE_SHOWN = 8;
+
 // Що день тримає для одного менеджера: прострочене, сьогоднішні дзвінки й
 // покази, нічиї заявки з сайту, обʼєкти без руху. Той самий зріз іде о 8:30 і
-// на кнопку «Задачі на день». null, коли показувати нічого.
+// на кнопку «Задачі на день». Кожна задача кнопкою: з неї «Виконано» і
+// «Перенести». null, коли показувати нічого.
 async function dayBrief(pool, userId, { today, staleDays, freeLeads, title }) {
   const { rows: clients } = await pool.query(
     'SELECT id, data FROM clients WHERE manager_id = $1 AND archived_at IS NULL', [userId]
@@ -326,13 +350,14 @@ async function dayBrief(pool, userId, { today, staleDays, freeLeads, title }) {
   for (const row of clients) {
     const c = row.data || {};
     for (const task of c.tasks || []) {
-      if (task.done || !task.date) continue;
-      const who = c.name || c.phone || 'Клієнт';
-      const what = `${taskWord(task.type)}: ${who}${task.time ? ', ' + task.time : ''}`;
-      if (task.date < today) late.push(what);
-      else if (task.date === today) due.push(what);
+      if (task.done || !task.date || !task.id) continue;
+      const item = { key: `${task.date} ${task.time || '99:99'}`, button: taskButton(row.id, c, task, today) };
+      if (task.date < today) late.push(item);
+      else if (task.date === today) due.push(item);
     }
   }
+  late.sort((a, b) => a.key.localeCompare(b.key));
+  due.sort((a, b) => a.key.localeCompare(b.key));
   const { rows: stale } = await pool.query(
     `SELECT count(*)::int n FROM catalog_items
      WHERE created_by = $1 AND archived_at IS NULL
@@ -343,20 +368,20 @@ async function dayBrief(pool, userId, { today, staleDays, freeLeads, title }) {
   if (!due.length && !late.length && !freeLeads && !stale[0].n) return null;
 
   const lines = [title];
-  if (late.length) {
-    lines.push('', `<b>Прострочено ${late.length}</b>`);
-    for (const x of late.slice(0, 5)) lines.push(x);
-  }
-  if (due.length) {
-    lines.push('', '<b>Сьогодні</b>');
-    for (const x of due.slice(0, 8)) lines.push(x);
+  const counts = [];
+  if (late.length) counts.push(`<b>Прострочено ${late.length}</b>`);
+  if (due.length) counts.push(`${counts.length ? 'сьогодні' : 'Сьогодні'} ${due.length}`);
+  if (counts.length) {
+    lines.push('', counts.join(', ') + '. Тисни задачу, щоб закрити чи перенести.');
+    const hidden = Math.max(0, late.length - LATE_SHOWN) + Math.max(0, due.length - DUE_SHOWN);
+    if (hidden) lines.push(`Ще ${hidden} в «Мої клієнти».`);
   }
   if (freeLeads) lines.push('', `Нічиїх заявок із сайту: ${freeLeads}`);
   if (stale[0].n) lines.push(`Обʼєкти без руху понад ${staleDays} днів: ${stale[0].n}`);
 
-  const rows = [[{ text: 'Мої клієнти', callback_data: 'p:c' }]];
+  const rows = [...late.slice(0, LATE_SHOWN), ...due.slice(0, DUE_SHOWN)].map(x => [x.button]);
+  rows.push([{ text: 'Мої клієнти', callback_data: 'p:c' }, { text: 'Приховати до завтра', callback_data: 'p:close' }]);
   if (stale[0].n) rows.push([{ text: 'Показати обʼєкти', callback_data: 'p:o' }]);
-  rows.push([{ text: 'Приховати до завтра', callback_data: 'p:close' }]);
   return { text: lines.join('\n'), rows };
 }
 
@@ -559,4 +584,6 @@ module.exports = {
   checkAndSendMorningBrief,
   sendDayBrief,
   dayBrief,
+  taskWhenWord,
+  taskButton,
 };
